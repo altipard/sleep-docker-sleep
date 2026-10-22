@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sds · overview</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f6f8; --card: #ffffff; --fg: #111827; --muted: #6b7280; --border: #e5e7eb;
+    --accent: #2563eb; --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --idle: #6b7280; --row: #f9fafb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d1117; --card: #161b22; --fg: #e6edf3; --muted: #8b949e; --border: #30363d; --accent: #58a6ff; --ok: #3fb950; --warn: #d29922; --bad: #f85149; --idle: #8b949e; --row: #1c2129; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--border); background: var(--card); position: sticky; top: 0; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header h1 span { color: var(--muted); font-weight: 400; }
+  header .meta { margin-left: auto; color: var(--muted); font-size: 12px; display: flex; gap: 16px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--idle); margin-right: 6px; vertical-align: middle; }
+  .dot.live { background: var(--ok); }
+  main { padding: 20px 24px; display: grid; gap: 20px; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 500; }
+  tr:last-child td { border-bottom: 0; }
+  tr.group { cursor: pointer; }
+  tr.group:hover { background: var(--row); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; color: #fff; background: var(--idle); }
+  .badge.running { background: var(--ok); }
+  .badge.starting, .badge.stopping { background: var(--warn); }
+  .badge.failed { background: var(--bad); }
+  .name { font-weight: 600; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  button { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--fg); cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  .actions { white-space: nowrap; }
+  .warn { color: var(--warn); }
+  .bad { color: var(--bad); }
+  .members { margin: 4px 0 0; padding: 0; list-style: none; }
+  .members li::before { content: "●"; margin-right: 6px; color: var(--idle); }
+  .members li.up::before { color: var(--ok); }
+  .members li.unhealthy::before { color: var(--bad); }
+  .details td { background: var(--row); }
+  .details dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 16px; margin: 0; }
+  .details dt { color: var(--muted); }
+  .details dd { margin: 0; }
+  #log { max-height: 70vh; overflow: auto; }
+  #log .ev { padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  #log .ev:last-child { border-bottom: 0; }
+  #log time { color: var(--muted); margin-right: 8px; font-variant-numeric: tabular-nums; }
+  #log .g { font-weight: 600; margin-right: 6px; }
+  #log .k { color: var(--muted); margin-right: 6px; }
+  #log .ev.start_failed, #log .ev.stop_failed, #log .ev.warning { color: var(--bad); }
+  .empty { padding: 24px 16px; color: var(--muted); text-align: center; }
+  #warnings { padding: 0 16px; }
+  #warnings p { margin: 10px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>sleep-docker-sleep <span>overview</span></h1>
+  <div class="meta">
+    <span id="conn"><span class="dot"></span>connecting…</span>
+    <span id="docker"></span>
+    <span id="version"></span>
+  </div>
+</header>
+<main>
+  <section class="card">
+    <h2>Groups</h2>
+    <div id="warnings"></div>
+    <table>
+      <thead>
+        <tr><th>Group</th><th>State</th><th>Containers</th><th class="num">Requests</th><th>Last request</th><th>Sleeps in</th><th></th></tr>
+      </thead>
+      <tbody id="groups"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </section>
+  <section class="card">
+    <h2>Events</h2>
+    <div id="log"><div class="empty">No events yet.</div></div>
+  </section>
+</main>
+<script>
+(function () {
+  const $ = (s) => document.querySelector(s);
+  const open = new Set();
+  let status = null;
+  let token = null;
+  try { token = localStorage.getItem('sds.token'); } catch (e) {}
+
+  function headers() { return token ? { 'X-SDS-Token': token } : {}; }
+
+  function fmtAge(ms, now) {
+    if (!ms) return '—';
+    let s = Math.max(0, Math.round((now - ms) / 1000));
+    if (s < 60) return s + 's ago';
+    if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's ago';
+    return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm ago';
+  }
+  function fmtDur(ms) {
+    if (ms == null) return '—';
+    let s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return s + 's';
+    if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+    return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+  }
+  function fmtTime(ms) { return new Date(ms).toLocaleTimeString(); }
+  function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+  function sleepsIn(g, now) {
+    if (g.state !== 'running') return null;
+    const last = g.last_activity_ms || g.state_since_ms;
+    return last + durMs(g.settings.idle_timeout) - now;
+  }
+  function durMs(h) {
+    // humantime strings like "15m", "1h 30m", "90s"
+    let total = 0;
+    for (const m of String(h).matchAll(/(\d+)\s*(ms|s|m|h|d)/g)) {
+      const n = +m[1]; total += { ms: n, s: n * 1e3, m: n * 6e4, h: n * 36e5, d: n * 864e5 }[m[2]];
+    }
+    return total;
+  }
+
+  function render() {
+    if (!status) return;
+    const now = status.now_ms + (Date.now() - status._received);
+    $('#docker').textContent = 'docker: ' + status.docker;
+    $('#version').textContent = 'sds ' + status.version;
+    $('#warnings').innerHTML = status.warnings.map((w) => '<p class="warn">⚠ ' + esc(w) + '</p>').join('');
+    const tb = $('#groups');
+    if (!status.groups.length) { tb.innerHTML = '<tr><td colspan="7" class="empty">No groups discovered. Add <code>sds.enable=true</code> labels or a <code>[groups.*]</code> entry.</td></tr>'; return; }
+    tb.innerHTML = status.groups.map((g) => {
+      const left = sleepsIn(g, now);
+      const members = g.members.map((m) => '<li class="' + (m.running ? 'up' : '') + (m.health === 'unhealthy' ? ' unhealthy' : '') + '" title="' + esc(m.id) + '">' + esc(m.name) + (m.health !== 'none' ? ' <span class="sub">' + esc(m.health) + '</span>' : '') + '</li>').join('');
+      const warn = g.warnings.map((w) => '<div class="sub warn">⚠ ' + esc(w) + '</div>').join('');
+      const err = g.last_error ? '<div class="sub bad">' + esc(g.last_error) + '</div>' : '';
+      const row = '<tr class="group" data-g="' + esc(g.name) + '">' +
+        '<td><div class="name">' + esc(g.name) + '</div><div class="sub">' + esc(g.source) + ' · idle ' + esc(g.settings.idle_timeout) + ' · ' + esc(g.settings.wake) + '</div>' + warn + err + '</td>' +
+        '<td><span class="badge ' + esc(g.state) + '">' + esc(g.state) + '</span><div class="sub">since ' + fmtTime(g.state_since_ms) + '</div></td>' +
+        '<td><ul class="members">' + members + '</ul></td>' +
+        '<td class="num">' + g.requests_total + (g.inflight ? '<div class="sub">' + g.inflight + ' open</div>' : '') + '</td>' +
+        '<td>' + fmtAge(g.last_activity_ms, now) + '</td>' +
+        '<td>' + (left == null ? '—' : fmtDur(left)) + '</td>' +
+        '<td class="actions"><button data-act="wake" data-g="' + esc(g.name) + '" ' + (g.state === 'running' || g.state === 'starting' ? 'disabled' : '') + '>Wake</button> ' +
+        '<button data-act="sleep" data-g="' + esc(g.name) + '" ' + (g.state !== 'running' ? 'disabled' : '') + '>Sleep</button></td></tr>';
+      if (!open.has(g.name)) return row;
+      const s = g.settings;
+      const details = '<tr class="details"><td colspan="7"><dl>' +
+        '<dt>health</dt><dd class="mono">' + esc(s.health) + '</dd>' +
+        '<dt>start / stop timeout</dt><dd>' + esc(s.start_timeout) + ' / ' + esc(s.stop_timeout) + '</dd>' +
+        '<dt>hold timeout / max waiters</dt><dd>' + esc(s.hold_timeout) + ' / ' + s.max_waiters + '</dd>' +
+        (s.proxy ? '<dt>native proxy</dt><dd class="mono">' + esc(s.proxy.mode) + ' ' + esc(s.proxy.listen) + ' → ' + esc(s.proxy.upstream) + '</dd>' : '') +
+        '<dt>wakes / sleeps</dt><dd>' + g.wakes_total + ' / ' + g.sleeps_total + '</dd>' +
+        '<dt>forward-auth URL</dt><dd class="mono">' + esc(location.origin) + '/_sds/check/' + esc(g.name) + '</dd>' +
+        '</dl></td></tr>';
+      return row + details;
+    }).join('');
+  }
+
+  function addEvent(ev, prepend) {
+    const log = $('#log');
+    if (log.firstElementChild && log.firstElementChild.classList.contains('empty')) log.innerHTML = '';
+    const div = document.createElement('div');
+    div.className = 'ev ' + ev.kind;
+    div.innerHTML = '<time>' + fmtTime(ev.ts_ms) + '</time><span class="g">' + esc(ev.group) + '</span><span class="k">' + esc(ev.kind) + '</span>' + esc(ev.message);
+    if (prepend) log.prepend(div); else log.prepend(div);
+    while (log.children.length > 300) log.lastElementChild.remove();
+  }
+
+  async function act(action, group) {
+    const r = await fetch('/api/v1/groups/' + encodeURIComponent(group) + '/' + action, { method: 'POST', headers: headers() });
+    if (r.status === 401) askToken();
+  }
+
+  function askToken() {
+    const t = prompt('This sds instance requires a token (admin.token in sds.toml):');
+    if (t) { token = t; try { localStorage.setItem('sds.token', t); } catch (e) {} connect(); }
+  }
+
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-act]');
+    if (b) { e.stopPropagation(); act(b.dataset.act, b.dataset.g); return; }
+    const tr = e.target.closest('tr.group');
+    if (tr) { const g = tr.dataset.g; open.has(g) ? open.delete(g) : open.add(g); render(); }
+  });
+
+  let es = null;
+  function connect() {
+    if (es) es.close();
+    // EventSource cannot send headers; pass the token as a query parameter is not supported
+    // either, so with a token configured we poll instead of streaming.
+    if (token) { poll(); return; }
+    es = new EventSource('/api/v1/events');
+    es.addEventListener('status', (m) => { status = JSON.parse(m.data); status._received = Date.now(); seedEvents(); render(); setConn(true); });
+    es.addEventListener('event', (m) => addEvent(JSON.parse(m.data)));
+    es.onerror = () => setConn(false);
+  }
+  let seeded = false;
+  function seedEvents() {
+    if (seeded || !status) return; seeded = true;
+    $('#log').innerHTML = '';
+    status.events.forEach((ev) => addEvent(ev));
+  }
+  async function poll() {
+    try {
+      const r = await fetch('/api/v1/status', { headers: headers() });
+      if (r.status === 401) { setConn(false); askToken(); return; }
+      status = await r.json(); status._received = Date.now();
+      const seen = new Set([...document.querySelectorAll('#log .ev')].map((d) => d.dataset.id));
+      $('#log').innerHTML = '';
+      status.events.forEach((ev) => addEvent(ev));
+      render(); setConn(true);
+    } catch (e) { setConn(false); }
+    setTimeout(poll, 2000);
+  }
+  function setConn(ok) {
+    $('#conn').innerHTML = '<span class="dot ' + (ok ? 'live' : '') + '"></span>' + (ok ? 'live' : 'disconnected');
+  }
+  setInterval(render, 1000);
+  connect();
+})();
+</script>
+</body>
+</html>
