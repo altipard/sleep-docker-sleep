@@ -61,7 +61,7 @@ src/
   with rate limiting, external start/stop events, wake during stop.
 - Snippet generators and unit files are checked for the decisive lines.
 - CLI tests (`tests/cli.rs`) via `assert_cmd`.
-- End-to-end check against real Docker: `task smoke` (labelled nginx, forward-auth wake,
+- End-to-end check against real Docker: `just smoke` (labelled nginx, forward-auth wake,
   idle stop), or by hand with `examples/native-proxy`.
 
 ## Release
