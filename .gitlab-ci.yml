@@ -1,0 +1,110 @@
+# Release flow per ADR 0005 (engineering-handbook): merge requests lint and test, main
+# computes the version with commitizen, builds image and binary and creates tag + release
+# with the job token only.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+stages:
+  - check
+  - test
+  - version
+  - build
+  - release
+
+variables:
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  CARGO_TERM_COLOR: always
+
+.rust:
+  image: rust:1.90-bookworm
+  cache:
+    key: cargo-$CI_COMMIT_REF_SLUG
+    paths:
+      - .cargo/registry
+      - target
+  before_script:
+    - rustup component add rustfmt clippy
+
+commit-format:
+  stage: check
+  image: python:3.12-slim
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - pip install --quiet commitizen
+    - cz check --rev-range "$CI_MERGE_REQUEST_DIFF_BASE_SHA..HEAD"
+
+lint:
+  extends: .rust
+  stage: check
+  script:
+    - cargo fmt --all -- --check
+    - cargo clippy --all-targets -- -D warnings
+
+hadolint:
+  stage: check
+  image: hadolint/hadolint:latest-debian
+  script:
+    - hadolint Dockerfile
+
+test:
+  extends: .rust
+  stage: test
+  script:
+    - cargo test --locked
+
+version:
+  stage: version
+  image: python:3.12-slim
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - pip install --quiet commitizen
+    - git fetch --tags --quiet
+    - VERSION=$(cz bump --get-next 2>/dev/null || true)
+    - echo "VERSION=$VERSION" > version.env
+    - cat version.env
+  artifacts:
+    reports:
+      dotenv: version.env
+
+build-image:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs: [version, test, lint]
+  script:
+    - if [ -z "$VERSION" ]; then echo "no release-relevant commits"; exit 0; fi
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile"
+        --destination "$CI_REGISTRY_IMAGE:$VERSION" --destination "$CI_REGISTRY_IMAGE:latest"
+
+build-binary:
+  extends: .rust
+  stage: build
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs: [version, test, lint]
+  script:
+    - if [ -z "$VERSION" ]; then echo "no release-relevant commits"; exit 0; fi
+    - cargo build --release --locked
+    - mkdir -p dist && cp target/release/sds dist/sds-linux-x86_64
+  artifacts:
+    paths: [dist/]
+    expire_in: 1 week
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs: [version, build-image, build-binary]
+  script:
+    - if [ -z "$VERSION" ]; then echo "no release"; exit 0; fi
+    - release-cli create --name "$VERSION" --tag-name "$VERSION" --ref "$CI_COMMIT_SHA"
+        --description "Image: $CI_REGISTRY_IMAGE:$VERSION"
+        --assets-link "{\"name\":\"sds-linux-x86_64\",\"url\":\"$CI_PROJECT_URL/-/jobs/artifacts/$CI_COMMIT_SHA/raw/dist/sds-linux-x86_64?job=build-binary\"}"
