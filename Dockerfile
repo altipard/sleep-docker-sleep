@@ -4,13 +4,16 @@ FROM rust:1.90-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# Version is stamped at build time; the release workflow passes the tag.
+ARG SDS_VERSION=0.0.0-dev
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked && cp target/release/sds /sds
+    sed -i "s/^version = \".*\"/version = \"${SDS_VERSION}\"/" Cargo.toml \
+    && cargo build --release && cp target/release/sds /sds
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates=* \
-    && apt-get clean && find /var/lib/apt/lists -type f -delete
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 COPY --from=build /sds /usr/local/bin/sds
 # The admin API must be reachable from the reverse proxy, so bind to all interfaces inside
 # the container (admin.bind = "0.0.0.0:9900") and protect it with a token or a private network.

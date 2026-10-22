@@ -66,10 +66,12 @@ src/
 
 ## Release
 
-Conventional Commits, commitizen and GitLab CI per ADR 0005 of the engineering handbook:
-`fix` → patch, `feat` → minor, `!` → major; other types do not trigger a release. The
-pipeline on `main` determines the version, builds image and binary and creates the tag
-plus GitLab release with the job token.
+Conventional Commits and commitizen decide the version: `fix` → patch, `feat` → minor,
+`!` → major; other types do not trigger a release. Versions live in git tags only.
+`.github/workflows/ci.yml` runs fmt, clippy, tests, hadolint and the commit-format check
+on pull requests. `.github/workflows/release.yml` runs on `main`: it asks commitizen for
+the next version, builds binaries for Linux and macOS with that version stamped into the
+binary, pushes the image to `ghcr.io` and creates the tag and the GitHub release.
 
 ## Extension points
 
