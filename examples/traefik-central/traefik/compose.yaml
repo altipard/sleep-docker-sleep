@@ -1,0 +1,24 @@
+services:
+  traefik:
+    image: traefik:v3.3
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=proxy
+      - --entrypoints.web.address=:80
+      # TLS via Let's Encrypt is omitted here; add the usual certresolver lines.
+    ports:
+      - "80:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # how Traefik reaches sds on the host
+    networks:
+      - proxy
+    labels:
+      sds.keep_awake: "true"                  # never put the central proxy to sleep
+
+networks:
+  proxy:
+    external: true
