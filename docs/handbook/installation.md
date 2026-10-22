@@ -10,12 +10,18 @@
 
 ## Option A: binary on the host (recommended)
 
-The release contains a statically linked Linux binary (`sds-linux-x86_64`). On macOS or
-other architectures build from source:
+Every [GitHub release](https://github.com/altipard/sleep-docker-sleep/releases) ships
+binaries for Linux (x86_64, aarch64) and macOS (Apple Silicon, Intel):
 
 ```bash
-cargo build --release          # Rust 1.85+
-sudo install -m 755 target/release/sds /usr/local/bin/sds
+curl -fsSLo sds https://github.com/altipard/sleep-docker-sleep/releases/latest/download/sds-linux-x86_64
+sudo install -m 755 sds /usr/local/bin/sds
+```
+
+Or build from source (Rust 1.85+):
+
+```bash
+cargo install --git https://github.com/altipard/sleep-docker-sleep --locked
 ```
 
 Put the configuration in `/etc/sds/sds.toml` (see [Configuration](configuration.md)), then:
@@ -53,7 +59,7 @@ and `sds` should be reachable on the same Docker network. Template:
 ```yaml
 services:
   sds:
-    image: registry.gitlab.com/zilicon-it-services/sleep-docker-sleep:<version>
+    image: ghcr.io/altipard/sleep-docker-sleep:<version>
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

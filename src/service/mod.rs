@@ -56,7 +56,7 @@ pub fn render(kind: ServiceKind, input: &UnitInput<'_>) -> String {
         ServiceKind::Systemd => format!(
             r#"[Unit]
 Description=sleep-docker-sleep: scale idle containers to zero
-Documentation=https://gitlab.com/zilicon-it-services/sleep-docker-sleep
+Documentation=https://github.com/altipard/sleep-docker-sleep
 After=docker.service network-online.target
 Requires=docker.service
 Wants=network-online.target

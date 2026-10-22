@@ -2,7 +2,7 @@
 # network shared with the reverse proxy; the proxy then uses http://sds:9900/_sds/check/<group>.
 services:
   sds:
-    image: registry.gitlab.com/zilicon-it-services/sleep-docker-sleep:latest
+    image: ghcr.io/altipard/sleep-docker-sleep:latest
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
