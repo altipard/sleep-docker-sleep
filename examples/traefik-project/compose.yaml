@@ -1,0 +1,29 @@
+# Project with its own Traefik, configured entirely through labels.
+# Traefik stays awake; app sleeps. sds runs on the host (host.docker.internal:9900).
+services:
+  traefik:
+    image: traefik:v3.3
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+    ports:
+      - "80:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    labels:
+      sds.keep_awake: "true"
+  app:
+    image: nginx:alpine
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.shop.rule: "Host(`shop.example.com`)"
+      traefik.http.routers.shop.entrypoints: "web"
+      traefik.http.routers.shop.middlewares: "sds-shop"
+      traefik.http.middlewares.sds-shop.forwardauth.address: "http://host.docker.internal:9900/_sds/check/shop"
+      traefik.http.middlewares.sds-shop.forwardauth.authResponseHeaders: "X-SDS-State"
+      sds.enable: "true"
+      sds.group: "shop"
+      sds.idle_timeout: "10m"

@@ -1,0 +1,15 @@
+# No reverse proxy at all: sds itself owns the public port (8080) and forwards to the
+# container's loopback-only port (18080). Same pattern for TCP services (sds.proxy.mode=tcp).
+services:
+  app:
+    image: nginx:alpine
+    ports:
+      - "127.0.0.1:18080:80"
+    labels:
+      sds.enable: "true"
+      sds.group: "demo"
+      sds.idle_timeout: "5m"
+      sds.health: "http://127.0.0.1:18080/"
+      sds.proxy.listen: "0.0.0.0:8080"
+      sds.proxy.upstream: "127.0.0.1:18080"
+      sds.proxy.mode: "http"

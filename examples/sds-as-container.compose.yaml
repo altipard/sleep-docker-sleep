@@ -1,0 +1,16 @@
+# Run sds itself as a container (e.g. next to Traefik). It needs the Docker socket and a
+# network shared with the reverse proxy; the proxy then uses http://sds:9900/_sds/check/<group>.
+services:
+  sds:
+    image: registry.gitlab.com/zilicon-it-services/sleep-docker-sleep:latest
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./sds.toml:/etc/sds/sds.toml:ro      # admin.bind must be "0.0.0.0:9900" here
+    networks:
+      - proxy
+    labels:
+      sds.keep_awake: "true"
+networks:
+  proxy:
+    external: true

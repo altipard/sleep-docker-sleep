@@ -1,0 +1,18 @@
+# Host nginx in front, application stack managed by sds.
+# The app publishes its port only on loopback; nginx talks to 127.0.0.1:18080 and asks
+# sds (127.0.0.1:9900) before each request. See nginx.conf next to this file.
+services:
+  app:
+    image: nginx:alpine
+    ports:
+      - "127.0.0.1:18080:80"
+    labels:
+      sds.enable: "true"
+      sds.idle_timeout: "15m"
+      sds.health: "http://127.0.0.1:18080/"
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: example
+    labels:
+      sds.enable: "true"       # same compose project => same group "nginx-host"

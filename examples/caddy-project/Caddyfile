@@ -1,0 +1,13 @@
+# Generated with: sds integrate caddy shop --host shop.example.com --upstream http://app:80 --sds-url http://host.docker.internal:9900
+shop.example.com {
+    forward_auth host.docker.internal:9900 {
+        uri /_sds/check/shop
+        copy_headers X-SDS-State
+        transport http {
+            response_header_timeout 65s
+            dial_timeout 2s
+        }
+    }
+
+    reverse_proxy app:80
+}
