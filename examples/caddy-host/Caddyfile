@@ -1,0 +1,36 @@
+# /etc/caddy/Caddyfile on the host. One site block per project, generated with
+#   sds integrate caddy shop --host shop.example.com --upstream http://127.0.0.1:18080
+#   sds integrate caddy blog --host blog.example.com --upstream http://127.0.0.1:18081
+# Caddy obtains TLS certificates itself; sds only sees the forward-auth requests.
+
+shop.example.com {
+    forward_auth 127.0.0.1:9900 {
+        uri /_sds/check/shop
+        copy_headers X-SDS-State
+        transport http {
+            response_header_timeout 65s
+            dial_timeout 2s
+        }
+    }
+    reverse_proxy 127.0.0.1:18080
+}
+
+blog.example.com {
+    forward_auth 127.0.0.1:9900 {
+        uri /_sds/check/blog
+        copy_headers X-SDS-State
+        transport http {
+            response_header_timeout 65s
+            dial_timeout 2s
+        }
+    }
+    reverse_proxy 127.0.0.1:18081
+}
+
+# Optional: the sds web overview behind Caddy with basic auth (sds itself has no TLS).
+# sds.example.com {
+#     basic_auth {
+#         admin $2a$14$...   # caddy hash-password
+#     }
+#     reverse_proxy 127.0.0.1:9900
+# }

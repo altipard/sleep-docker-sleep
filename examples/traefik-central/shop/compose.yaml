@@ -1,0 +1,32 @@
+# A project behind the central Traefik. No ports are published; Traefik reaches the app
+# over the shared network. The sds middleware is declared right here with the router.
+services:
+  app:
+    image: nginx:alpine
+    networks:
+      - default
+      - proxy
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: "proxy"
+      traefik.http.routers.shop.rule: "Host(`shop.example.com`)"
+      traefik.http.routers.shop.entrypoints: "web"
+      traefik.http.routers.shop.middlewares: "sds-shop"
+      traefik.http.services.shop.loadbalancer.server.port: "80"
+      traefik.http.middlewares.sds-shop.forwardauth.address: "http://host.docker.internal:9900/_sds/check/shop"
+      traefik.http.middlewares.sds-shop.forwardauth.authResponseHeaders: "X-SDS-State"
+      sds.enable: "true"
+      sds.group: "shop"
+      sds.idle_timeout: "15m"
+      sds.health: "docker"
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: example
+    labels:
+      sds.enable: "true"
+      sds.group: "shop"
+
+networks:
+  proxy:
+    external: true

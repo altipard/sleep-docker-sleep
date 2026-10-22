@@ -1,0 +1,24 @@
+# Caddy installed on the host (not a container) in front of several projects.
+# Every project publishes its port on loopback only; Caddy talks to those ports and asks
+# sds (127.0.0.1:9900) before each request. See Caddyfile next to this file.
+#
+# This file is one of the projects ("shop"); a second project would look the same with
+# another group name and another loopback port.
+services:
+  app:
+    image: nginx:alpine
+    ports:
+      - "127.0.0.1:18080:80"
+    labels:
+      sds.enable: "true"
+      sds.group: "shop"
+      sds.idle_timeout: "15m"
+      sds.health: "http://127.0.0.1:18080/"
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: example
+    labels:
+      sds.enable: "true"
+      sds.group: "shop"
+      sds.stop_timeout: "60s"

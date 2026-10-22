@@ -35,7 +35,7 @@ task smoke      # end-to-end check against real Docker
 task docs:serve # handbook with live reload (mdBook)
 ```
 
-Examples for nginx, Caddy, Traefik and the native proxy live under `examples/`.
+Examples for host nginx/Caddy, project and central Traefik, and the native proxy live under `examples/` (see `examples/README.md`).
 Commits follow Conventional Commits; releases are created automatically from `main`.
 
 ## License
