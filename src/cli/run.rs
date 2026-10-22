@@ -53,7 +53,9 @@ pub async fn run(explicit: Option<&Path>, args: RunArgs) -> Result<()> {
     let signal_task = tokio::spawn(wait_for_shutdown(cancel.clone(), explicit.map(Path::to_path_buf)));
 
     if use_tui {
-        let ui = crate::tui::Dashboard::new(Arc::clone(&registry), log_buffer, cfg.admin.bind);
+        let source =
+            crate::tui::LocalSource { registry: Arc::clone(&registry), logs: log_buffer, bind: cfg.admin.bind };
+        let ui = crate::tui::Dashboard::new(Box::new(source));
         let cancel_ui = cancel.clone();
         let outcome = tokio::task::spawn_blocking(move || ui.run(cancel_ui)).await;
         cancel.cancel();

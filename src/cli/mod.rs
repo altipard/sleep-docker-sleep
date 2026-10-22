@@ -38,6 +38,9 @@ pub enum Command {
     Wake(status::WakeArgs),
     /// Stop a group now
     Sleep(status::SleepArgs),
+    /// Attach the terminal dashboard to a running daemon (alias: attach)
+    #[command(alias = "attach")]
+    Top(status::TopArgs),
     /// Validate configuration, Docker access and discovered groups without starting anything
     Check(check::CheckArgs),
     /// Write a commented sds.toml
@@ -74,6 +77,7 @@ pub async fn main(cli: Cli) -> Result<()> {
         Command::Status(args) => status::status(cli.config.as_deref(), args).await,
         Command::Wake(args) => status::wake(cli.config.as_deref(), args).await,
         Command::Sleep(args) => status::sleep(cli.config.as_deref(), args).await,
+        Command::Top(args) => status::top(cli.config.as_deref(), args).await,
         Command::Check(args) => check::check(cli.config.as_deref(), args).await,
         Command::Init(args) => init::init(args),
         Command::Integrate(args) => integrate::integrate(cli.config.as_deref(), args),

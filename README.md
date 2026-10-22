@@ -13,7 +13,7 @@ Browser ─▶ reverse proxy ─(forward-auth)─▶ sds ─▶ docker start/sto
 - A group (a Compose project by default) sleeps and wakes as one unit.
 - While waking up, the request is held or a waiting page is shown.
 - Native TCP/HTTP proxy for stacks without a reverse proxy.
-- CLI, terminal dashboard, web overview and JSON API from one process.
+- CLI, terminal dashboard (`sds top` attaches to the running service), web overview and JSON API from one process.
 
 ## Quick start
 

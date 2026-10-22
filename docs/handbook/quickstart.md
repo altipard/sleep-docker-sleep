@@ -56,12 +56,13 @@ To try it out in the foreground with the dashboard:
 sds run --config /etc/sds/sds.toml
 ```
 
-Permanently as a service:
+Permanently as a service (one daemon per host covers all projects):
 
 ```bash
 sudo sds service install --config /etc/sds/sds.toml
 sudo systemctl enable --now sds          # macOS: see the output of service install
-sds status
+sds status                               # snapshot
+sds top                                  # dashboard attached to the service, q detaches
 ```
 
 ## 5. Connect the reverse proxy

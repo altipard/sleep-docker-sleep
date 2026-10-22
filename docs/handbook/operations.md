@@ -6,6 +6,7 @@
 |---|---|
 | `sds run [--headless] [--bind ADDR]` | Start the daemon. With a dashboard in a terminal; without a TTY or with `--headless` logs only. |
 | `sds status [--json] [--events]` | All groups with state, containers, last request, time left until sleep. |
+| `sds top` (alias `attach`) | Attach the terminal dashboard to the running daemon; `q` detaches, the daemon keeps running. |
 | `sds wake <group> [--wait]` | Start a group; with `--wait` the command blocks until ready (non-zero exit code on failure). |
 | `sds sleep <group>` | Stop a group immediately. |
 | `sds check [--json]` | Validate configuration, Docker access and groups without a daemon. Exit code 1 on warnings. |
@@ -23,6 +24,12 @@ variables `SDS_URL` / `SDS_TOKEN`.
 `sds run` in an interactive session shows groups, state, containers, requests and a log
 pane. Keys: `↑`/`↓` select, `w` wake, `s` sleep, `q` quit. On quit, containers stay as
 they are.
+
+The daemon normally runs in the background as a service. `sds top` (or `sds attach`) opens
+the same dashboard against the running daemon through the admin API, from any shell on
+the host (or remotely with `--url` and `--token`). The log pane then shows the daemon's
+event history; `q` only detaches. One daemon per host serves every Compose project on it;
+there is no need to run `sds run` per project.
 
 ## Web overview
 
