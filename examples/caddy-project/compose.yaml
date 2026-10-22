@@ -1,0 +1,27 @@
+# Project with its own Caddy. Caddy stays awake (sds.keep_awake), app and db sleep.
+# sds runs on the host; Caddy reaches it via host.docker.internal.
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    labels:
+      sds.keep_awake: "true"
+  app:
+    image: nginx:alpine
+    labels:
+      sds.enable: "true"
+      sds.group: "shop"
+      sds.idle_timeout: "10m"
+      sds.health: "docker"       # image HEALTHCHECK if present, else start_grace
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: example
+    labels:
+      sds.enable: "true"
+      sds.group: "shop"

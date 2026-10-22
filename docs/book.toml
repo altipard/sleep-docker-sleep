@@ -1,0 +1,8 @@
+[book]
+title = "sleep-docker-sleep – Handbuch"
+language = "de"
+src = "handbook"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
