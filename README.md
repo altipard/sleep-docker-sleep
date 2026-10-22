@@ -30,9 +30,9 @@ integration, operations, troubleshooting, API).
 ## Development
 
 ```bash
-task            # lint, test, build
-task smoke      # end-to-end check against real Docker
-task docs:serve # handbook with live reload (mdBook)
+just            # lint, test, build
+just smoke      # end-to-end check against real Docker
+just docs-serve # handbook with live reload (mdBook)
 ```
 
 Examples for host nginx/Caddy, project and central Traefik, and the native proxy live under `examples/` (see `examples/README.md`).
