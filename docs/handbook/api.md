@@ -1,22 +1,22 @@
-# HTTP-API
+# HTTP API
 
-Basis: `http://<admin.bind>` (Standard `http://127.0.0.1:9900`). Mit gesetztem
-`admin.token` verlangen `/api/*` und `/_sds/check/*` den Header `X-SDS-Token: <token>`
-oder `Authorization: Bearer <token>`; sonst `401`.
+Base: `http://<admin.bind>` (default `http://127.0.0.1:9900`). With `admin.token` set,
+`/api/*` and `/_sds/check/*` require the header `X-SDS-Token: <token>` or
+`Authorization: Bearer <token>`; otherwise `401`.
 
-## Übersicht
+## Overview
 
-| Methode | Pfad | Antwort |
+| Method | Path | Response |
 |---|---|---|
-| GET | `/healthz` | `ok` (Text) |
-| GET | `/` | Web-Übersicht (HTML) |
-| GET | `/_sds/check/<gruppe>` | Forward-Auth, siehe [Reverse-Proxy](reverse-proxy.md) |
-| GET | `/_sds/wait/<gruppe>` | Warteseite (HTML), `503` solange nicht `running`, `404` bei unbekannter Gruppe |
-| GET | `/api/v1/status` | Gesamtzustand (JSON) |
-| GET | `/api/v1/groups/<gruppe>` | Eine Gruppe (JSON), `404` wenn unbekannt |
-| POST | `/api/v1/groups/<gruppe>/wake` | `202` sofort; mit `?wait=true` blockierend: `200` bereit, `502` Start fehlgeschlagen, `504` Timeout, `503` überlastet |
-| POST | `/api/v1/groups/<gruppe>/sleep` | `202` |
-| GET | `/api/v1/events` | Server-Sent Events: `status` (alle 2 s und bei jedem Ereignis) und `event` |
+| GET | `/healthz` | `ok` (text) |
+| GET | `/` | web overview (HTML) |
+| GET | `/_sds/check/<group>` | forward-auth, see [Reverse proxy](reverse-proxy.md) |
+| GET | `/_sds/wait/<group>` | waiting page (HTML), `503` while not `running`, `404` for an unknown group |
+| GET | `/api/v1/status` | overall state (JSON) |
+| GET | `/api/v1/groups/<group>` | one group (JSON), `404` if unknown |
+| POST | `/api/v1/groups/<group>/wake` | `202` immediately; with `?wait=true` blocking: `200` ready, `502` start failed, `504` timeout, `503` overloaded |
+| POST | `/api/v1/groups/<group>/sleep` | `202` |
+| GET | `/api/v1/events` | server-sent events: `status` (every 2 s and on every event) and `event` |
 
 ## `GET /api/v1/status`
 
@@ -62,24 +62,24 @@ oder `Authorization: Bearer <token>`; sonst `401`.
 }
 ```
 
-Zeiten sind Unix-Millisekunden. Die verbleibende Zeit bis zum Einschlafen ergibt sich
-aus `last_activity_ms + idle_timeout - now_ms` (nur bei `state = running`).
+Times are Unix milliseconds. The remaining time until sleep is
+`last_activity_ms + idle_timeout - now_ms` (only while `state = running`).
 
 `state`: `stopped`, `starting`, `running`, `stopping`, `failed`.
-`health` eines Mitglieds: `none`, `starting`, `healthy`, `unhealthy`.
-`source`: `labels` oder `config`.
-`kind` eines Ereignisses: `discovered`, `removed`, `waking`, `running`, `start_failed`,
+A member's `health`: `none`, `starting`, `healthy`, `unhealthy`.
+`source`: `labels` or `config`.
+An event's `kind`: `discovered`, `removed`, `waking`, `running`, `start_failed`,
 `sleeping`, `stopped`, `stop_failed`, `external`, `warning`.
 
-## Beispiele
+## Examples
 
 ```bash
-# alle schlafenden Gruppen
+# all sleeping groups
 curl -s http://127.0.0.1:9900/api/v1/status | jq -r '.groups[] | select(.state=="stopped") | .name'
 
-# Gruppe wecken und warten
+# wake a group and wait
 curl -s -X POST 'http://127.0.0.1:9900/api/v1/groups/shop/wake?wait=true' | jq .result
 
-# Ereignisse live
+# live events
 curl -N http://127.0.0.1:9900/api/v1/events
 ```

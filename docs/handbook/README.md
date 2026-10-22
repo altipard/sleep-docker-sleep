@@ -1,55 +1,55 @@
-# sleep-docker-sleep (`sds`) – Handbuch
+# sleep-docker-sleep (`sds`) – Handbook
 
-`sds` stoppt Docker-Container, die eine Weile keine Anfragen bekommen haben, und startet
-sie wieder, sobald die nächste Anfrage eintrifft. Der erste Aufrufer wartet kurz oder
-bekommt eine Warteseite, danach läuft alles wie gewohnt. Ziel: Ressourcen auf Hosts mit
-vielen selten genutzten Stacks freihalten, ohne dass jemand manuell etwas starten muss.
+`sds` stops Docker containers that have not received requests for a while and starts them
+again as soon as the next request arrives. The first caller waits briefly or sees a
+waiting page; after that everything works as usual. The goal: free resources on hosts
+with many rarely used stacks without anyone having to start things by hand.
 
-Dieses Handbuch richtet sich an Administratoren, die `sds` einrichten und betreiben.
-Entwickler finden am Ende ein Kapitel zur [Architektur](architektur.md).
+This handbook is written for administrators who set up and operate `sds`. Developers will
+find a chapter on the [architecture](architecture.md) at the end.
 
-## Wie es funktioniert
+## How it works
 
 ```text
-                       1. Anfrage                      3. Antwort "200, weiter"
-  Browser ──────────▶ Reverse-Proxy ──── 2. forward-auth ────▶ sds ─────┐
-                      (nginx/Caddy/      GET /_sds/check/shop            │ startet bei
-                       Traefik)                                          │ Bedarf die
-                          │ 4. Anfrage an die App                        ▼ Container
-                          └────────────────────────────────▶ Container-Gruppe "shop"
+                       1. request                     3. answer "200, go ahead"
+  Browser ──────────▶ reverse proxy ──── 2. forward-auth ────▶ sds ─────┐
+                      (nginx/Caddy/      GET /_sds/check/shop            │ starts the
+                       Traefik)                                          │ containers
+                          │ 4. request to the app                        ▼ when needed
+                          └────────────────────────────────▶ container group "shop"
                                                              (app, db, …)
 ```
 
-1. Der Reverse-Proxy fragt vor jeder Anfrage bei `sds` an (Forward-Auth, ein Request von
-   wenigen Mikrosekunden, solange die Gruppe läuft).
-2. Läuft die Gruppe, antwortet `sds` sofort mit `200` und merkt sich die Aktivität.
-3. Schläft die Gruppe, startet `sds` die Container und hält die Anfrage, bis die Gruppe
-   gesund ist (`wake = hold`), oder liefert sofort eine Warteseite, die sich selbst neu
-   lädt (`wake = page`).
-4. Kommt über `idle_timeout` hinweg keine Anfrage, stoppt `sds` die Gruppe.
+1. Before every request the reverse proxy asks `sds` (forward-auth, a request that takes
+   microseconds while the group is running).
+2. If the group is running, `sds` answers `200` immediately and records the activity.
+3. If the group is asleep, `sds` starts the containers and either holds the request until
+   the group is healthy (`wake = hold`) or returns a waiting page right away that reloads
+   itself (`wake = page`).
+4. If no request arrives for `idle_timeout`, `sds` stops the group.
 
-`sds` ist damit **Control-Plane**: die eigentlichen Daten laufen weiterhin über den
-vorhandenen Reverse-Proxy. Fällt `sds` aus, läuft der Verkehr bei nginx unverändert
-weiter (Fail-open); nur das Schlafenlegen pausiert. Caddy und Traefik kennen für
-Forward-Auth keinen Bypass, dort überbrückt ein überwachter Dienst mit automatischem
-Neustart die Lücke (siehe [Grenzen](grenzen.md)).
+`sds` is therefore a **control plane**: the actual traffic keeps flowing through the
+existing reverse proxy. If `sds` goes down, traffic through nginx continues unchanged
+(fail-open); only putting groups to sleep pauses. Caddy and Traefik have no bypass for
+forward-auth; there a supervised service with automatic restart bridges the gap (see
+[Limitations](limitations.md)).
 
-Für Stacks ganz ohne Reverse-Proxy und für reine TCP-Dienste gibt es zusätzlich einen
-[nativen Proxy](nativer-proxy.md), bei dem `sds` selbst den öffentlichen Port hält.
+For stacks without any reverse proxy and for plain TCP services there is also a
+[native proxy](native-proxy.md), where `sds` itself owns the public port.
 
-## Begriffe
+## Terms
 
-| Begriff | Bedeutung |
+| Term | Meaning |
 |---|---|
-| **Gruppe** | Menge von Containern, die gemeinsam schlafen und aufwachen. Standard: ein Compose-Projekt. |
-| **Mitglied** | Ein Container in einer Gruppe (`sds.enable=true`). |
-| **keep_awake** | Container im selben Projekt, den `sds` nie stoppt (z. B. der projekteigene Caddy). |
-| **Forward-Auth** | Mechanismus, mit dem der Reverse-Proxy vor jeder Anfrage bei `sds` nachfragt. |
-| **hold / page** | Verhalten beim Aufwecken: Anfrage halten bzw. Warteseite liefern. |
-| **Health** | Kriterium, ab wann eine gestartete Gruppe Verkehr bekommt (Docker-HEALTHCHECK, HTTP, TCP oder Wartezeit). |
+| **Group** | A set of containers that sleep and wake together. Default: one Compose project. |
+| **Member** | A container in a group (`sds.enable=true`). |
+| **keep_awake** | A container in the same project that `sds` never stops (e.g. the project's own Caddy). |
+| **Forward-auth** | The mechanism by which the reverse proxy asks `sds` before every request. |
+| **hold / page** | Behaviour while waking up: hold the request, or serve a waiting page. |
+| **Health** | The criterion for when a started group receives traffic (Docker HEALTHCHECK, HTTP, TCP or a grace period). |
 
-## Was `sds` nicht ist
+## What `sds` is not
 
-- Kein Ersatz für einen Reverse-Proxy in Produktion. Der native Proxy ist für Sonderfälle.
-- Kein Orchestrator: `sds` startet und stoppt vorhandene Container, es erzeugt keine.
-- Kein Autoscaler: es gibt nur „an“ und „aus“, keine Replikas.
+- Not a replacement for a reverse proxy in production. The native proxy is for special cases.
+- Not an orchestrator: `sds` starts and stops existing containers, it does not create any.
+- Not an autoscaler: there is only "on" and "off", no replicas.

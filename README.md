@@ -1,43 +1,43 @@
 # sleep-docker-sleep (`sds`)
 
-Stoppt Docker-Container, die eine Weile keine Anfragen bekommen, und weckt sie beim
-nächsten Request wieder auf. Ein Rust-Binary, das sich an den vorhandenen Reverse-Proxy
-(nginx, Caddy, Traefik) anhängt und selbst keinen Datenverkehr tragen muss.
+Stops Docker containers that have not received requests for a while and wakes them up on
+the next request. A single Rust binary that hooks into the existing reverse proxy (nginx,
+Caddy, Traefik) and does not have to carry any traffic itself.
 
 ```text
-Browser ─▶ Reverse-Proxy ─(forward-auth)─▶ sds ─▶ docker start/stop
-                 └──────────────────────────────▶ Container-Gruppe
+Browser ─▶ reverse proxy ─(forward-auth)─▶ sds ─▶ docker start/stop
+                 └──────────────────────────────▶ container group
 ```
 
-- Container beschreiben sich per Label (`sds.enable=true`, `sds.idle_timeout=15m`).
-- Eine Gruppe (standardmäßig ein Compose-Projekt) schläft und wacht als Einheit.
-- Beim Aufwecken wird die Anfrage gehalten oder eine Warteseite gezeigt.
-- Nativer TCP/HTTP-Proxy für Stacks ohne Reverse-Proxy.
-- CLI, Terminal-Dashboard, Web-Übersicht und JSON-API aus einem Prozess.
+- Containers describe themselves with labels (`sds.enable=true`, `sds.idle_timeout=15m`).
+- A group (a Compose project by default) sleeps and wakes as one unit.
+- While waking up, the request is held or a waiting page is shown.
+- Native TCP/HTTP proxy for stacks without a reverse proxy.
+- CLI, terminal dashboard, web overview and JSON API from one process.
 
-## Schnellstart
+## Quick start
 
 ```bash
-sds init --path /etc/sds/sds.toml        # Konfiguration mit Kommentaren
-sds check                                # Docker-Zugriff und Gruppen prüfen
-sds run                                  # Daemon mit Dashboard
-sds integrate nginx <gruppe> --host app.example.com --upstream http://127.0.0.1:18080
+sds init --path /etc/sds/sds.toml        # commented configuration
+sds check                                # verify Docker access and groups
+sds run                                  # daemon with dashboard
+sds integrate nginx <group> --host app.example.com --upstream http://127.0.0.1:18080
 ```
 
-Vollständige Anleitung: [Handbuch](docs/handbook/README.md) (Installation, Konfiguration,
-Proxy-Anbindung, Betrieb, Fehlersuche, API).
+Full guide: [Handbook](docs/handbook/README.md) (installation, configuration, proxy
+integration, operations, troubleshooting, API).
 
-## Entwicklung
+## Development
 
 ```bash
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo run -- run --config sds.toml
+task            # lint, test, build
+task smoke      # end-to-end check against real Docker
+task docs:serve # handbook with live reload (mdBook)
 ```
 
-Beispiele für nginx, Caddy, Traefik und den nativen Proxy liegen unter `examples/`.
-Commits folgen Conventional Commits; Releases entstehen automatisch aus `main`.
+Examples for nginx, Caddy, Traefik and the native proxy live under `examples/`.
+Commits follow Conventional Commits; releases are created automatically from `main`.
 
-## Lizenz
+## License
 
-MIT, siehe `LICENSE`.
+MIT, see `LICENSE`.
