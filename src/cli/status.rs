@@ -32,6 +32,12 @@ pub struct WakeArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct TopArgs {
+    #[command(flatten)]
+    pub client: ClientArgs,
+}
+
+#[derive(Debug, Args)]
 pub struct SleepArgs {
     #[command(flatten)]
     pub client: ClientArgs,
@@ -170,6 +176,24 @@ pub async fn sleep(cfg: Option<&Path>, args: SleepArgs) -> Result<()> {
         }
         404 => bail!("unknown group `{}`", args.group),
         _ => bail!("{}: {}", code, body.get("error").and_then(|v| v.as_str()).unwrap_or("failed")),
+    }
+}
+
+/// `sds top`: the dashboard over the API of a running daemon.
+pub async fn top(cfg: Option<&Path>, args: TopArgs) -> Result<()> {
+    if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        bail!("`sds top` needs a terminal; use `sds status` for scripts");
+    }
+    let client = ApiClient::from_args(cfg, &args.client)?;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let source = crate::tui::RemoteSource::connect(client, cancel.clone()).await?;
+    let ui = crate::tui::Dashboard::new(Box::new(source));
+    let cancel_ui = cancel.clone();
+    let outcome = tokio::task::spawn_blocking(move || ui.run(cancel_ui)).await;
+    cancel.cancel();
+    match outcome {
+        Ok(result) => result,
+        Err(e) => bail!("dashboard panicked: {e}"),
     }
 }
 

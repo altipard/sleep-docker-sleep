@@ -17,6 +17,150 @@ use tokio_util::sync::CancellationToken;
 
 use crate::controller::{GroupSnapshot, Registry, StateKind, epoch_ms};
 
+/// Where the dashboard gets its data from: the in-process registry (`sds run`) or a
+/// running daemon's API (`sds top`).
+pub trait Source: Send {
+    fn snapshots(&self) -> Vec<GroupSnapshot>;
+    fn logs(&self) -> Vec<String>;
+    fn wake(&self, group: &str);
+    fn sleep(&self, group: &str);
+    fn docker_endpoint(&self) -> String;
+    /// Shown in the footer, e.g. the web overview URL.
+    fn location(&self) -> String;
+    /// `Some(reason)` while the source is unreachable.
+    fn problem(&self) -> Option<String> {
+        None
+    }
+}
+
+/// In-process source for `sds run`.
+pub struct LocalSource {
+    pub registry: Arc<Registry>,
+    pub logs: LogBuffer,
+    pub bind: SocketAddr,
+}
+
+impl Source for LocalSource {
+    fn snapshots(&self) -> Vec<GroupSnapshot> {
+        self.registry.snapshots()
+    }
+    fn logs(&self) -> Vec<String> {
+        self.logs.lines()
+    }
+    fn wake(&self, group: &str) {
+        if let Some(h) = self.registry.get(group) {
+            h.request_wake();
+        }
+    }
+    fn sleep(&self, group: &str) {
+        if let Some(h) = self.registry.get(group) {
+            h.request_sleep();
+        }
+    }
+    fn docker_endpoint(&self) -> String {
+        self.registry.docker_endpoint.clone()
+    }
+    fn location(&self) -> String {
+        format!("web overview: http://{}", self.bind)
+    }
+}
+
+/// Remote source for `sds top`: a background task polls `/api/v1/status` and executes
+/// wake/sleep requests; the dashboard thread only reads the latest copy.
+pub struct RemoteSource {
+    latest: Arc<Mutex<Option<crate::admin::api::StatusResponse>>>,
+    error: Arc<Mutex<Option<String>>>,
+    actions: tokio::sync::mpsc::UnboundedSender<(bool, String)>,
+    base: String,
+}
+
+impl RemoteSource {
+    /// Start polling. The first poll has already succeeded when this returns.
+    pub async fn connect(client: crate::cli::ApiClient, cancel: CancellationToken) -> anyhow::Result<Self> {
+        let first = client.status().await?;
+        let latest = Arc::new(Mutex::new(Some(first)));
+        let error = Arc::new(Mutex::new(None));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(bool, String)>();
+        let base = client.base().to_owned();
+        let (latest_bg, error_bg) = (Arc::clone(&latest), Arc::clone(&error));
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tick.tick() => match client.status().await {
+                        Ok(s) => {
+                            if let Ok(mut l) = latest_bg.lock() { *l = Some(s); }
+                            if let Ok(mut e) = error_bg.lock() { *e = None; }
+                        }
+                        Err(e) => {
+                            if let Ok(mut err) = error_bg.lock() { *err = Some(e.to_string()); }
+                        }
+                    },
+                    Some((wake, group)) = rx.recv() => {
+                        let result = if wake { client.wake(&group, false).await } else { client.sleep(&group).await };
+                        if let Err(e) = result {
+                            if let Ok(mut err) = error_bg.lock() { *err = Some(e.to_string()); }
+                        }
+                    }
+                }
+            }
+        });
+        Ok(Self { latest, error, actions: tx, base })
+    }
+}
+
+impl Source for RemoteSource {
+    fn snapshots(&self) -> Vec<GroupSnapshot> {
+        self.latest.lock().ok().and_then(|l| l.as_ref().map(|s| s.groups.clone())).unwrap_or_default()
+    }
+    fn logs(&self) -> Vec<String> {
+        self.latest
+            .lock()
+            .ok()
+            .and_then(|l| {
+                l.as_ref().map(|s| {
+                    s.events
+                        .iter()
+                        .map(|ev| {
+                            let secs = ev.ts_ms / 1000;
+                            let t =
+                                humantime::format_rfc3339_seconds(std::time::UNIX_EPOCH + Duration::from_secs(secs));
+                            let level = match ev.kind {
+                                crate::controller::EventKind::StartFailed
+                                | crate::controller::EventKind::StopFailed
+                                | crate::controller::EventKind::Warning => " WARN",
+                                _ => " INFO",
+                            };
+                            format!(
+                                "{t}{level} {} [{}] {}",
+                                ev.group,
+                                format!("{:?}", ev.kind).to_lowercase(),
+                                ev.message
+                            )
+                        })
+                        .collect()
+                })
+            })
+            .unwrap_or_default()
+    }
+    fn wake(&self, group: &str) {
+        let _ = self.actions.send((true, group.to_owned()));
+    }
+    fn sleep(&self, group: &str) {
+        let _ = self.actions.send((false, group.to_owned()));
+    }
+    fn docker_endpoint(&self) -> String {
+        self.latest.lock().ok().and_then(|l| l.as_ref().map(|s| s.docker.clone())).unwrap_or_default()
+    }
+    fn location(&self) -> String {
+        format!("attached to {}", self.base)
+    }
+    fn problem(&self) -> Option<String> {
+        self.error.lock().ok().and_then(|e| e.clone())
+    }
+}
+
 /// Ring buffer that receives `tracing` output while the dashboard owns the terminal.
 #[derive(Clone, Debug)]
 pub struct LogBuffer {
@@ -75,15 +219,13 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
 }
 
 pub struct Dashboard {
-    registry: Arc<Registry>,
-    logs: LogBuffer,
-    bind: SocketAddr,
+    source: Box<dyn Source>,
     table: TableState,
 }
 
 impl Dashboard {
-    pub fn new(registry: Arc<Registry>, logs: LogBuffer, bind: SocketAddr) -> Self {
-        Self { registry, logs, bind, table: TableState::default().with_selected(0) }
+    pub fn new(source: Box<dyn Source>) -> Self {
+        Self { source, table: TableState::default().with_selected(0) }
     }
 
     /// Blocking event loop; returns when the user quits or `cancel` fires.
@@ -99,8 +241,8 @@ impl Dashboard {
             if cancel.is_cancelled() {
                 return Ok(());
             }
-            let groups = self.registry.snapshots();
-            let logs = self.logs.lines();
+            let groups = self.source.snapshots();
+            let logs = self.source.logs();
             terminal.draw(|f| self.draw(f, &groups, &logs))?;
             if event::poll(Duration::from_millis(500))? {
                 if let Event::Key(key) = event::read()? {
@@ -115,16 +257,12 @@ impl Dashboard {
                         KeyCode::Up | KeyCode::Char('k') => self.select(groups.len(), -1),
                         KeyCode::Char('w') => {
                             if let Some(g) = selected {
-                                if let Some(h) = self.registry.get(&g.name) {
-                                    h.request_wake();
-                                }
+                                self.source.wake(&g.name);
                             }
                         }
                         KeyCode::Char('s') => {
                             if let Some(g) = selected {
-                                if let Some(h) = self.registry.get(&g.name) {
-                                    h.request_sleep();
-                                }
+                                self.source.sleep(&g.name);
                             }
                         }
                         _ => {}
@@ -162,7 +300,7 @@ impl Dashboard {
             Span::raw(" wake  "),
             Span::styled(" s ", Style::default().add_modifier(Modifier::REVERSED)),
             Span::raw(" sleep  "),
-            Span::styled(format!(" web overview: http://{} ", self.bind), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!(" {} ", self.source.location()), Style::default().fg(Color::DarkGray)),
         ]);
         f.render_widget(Paragraph::new(help), chunks[3]);
     }
@@ -183,8 +321,16 @@ impl Dashboard {
                 Style::default().fg(if failed > 0 { Color::Red } else { Color::DarkGray }),
             ),
             Span::raw("  "),
-            Span::styled(format!("docker {}", self.registry.docker_endpoint), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("docker {}", self.source.docker_endpoint()), Style::default().fg(Color::DarkGray)),
         ]);
+        let line = match self.source.problem() {
+            Some(p) => {
+                let mut spans = line.spans;
+                spans.push(Span::styled(format!("  ⚠ {p}"), Style::default().fg(Color::Red)));
+                Line::from(spans)
+            }
+            None => line,
+        };
         f.render_widget(Paragraph::new(line), area);
     }
 
