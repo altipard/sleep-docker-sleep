@@ -22,8 +22,12 @@ variables `SDS_URL` / `SDS_TOKEN`.
 ## Terminal dashboard
 
 `sds run` in an interactive session shows groups, state, containers, requests and a log
-pane. Keys: `↑`/`↓` select, `w` wake, `s` sleep, `q` quit. On quit, containers stay as
-they are.
+pane. Keys: `↑`/`↓` select, `w` wake, `s` sleep, `x` detach, `q` stop the daemon (asks
+for a second `q`, because sleeping groups cannot wake without the daemon). Containers are
+never touched by quitting.
+
+`x` leaves the dashboard but keeps the daemon running in the same process, now logging to
+stderr like `--headless`; `sds top` from another shell reattaches, Ctrl-C stops it.
 
 The daemon normally runs in the background as a service. `sds top` (or `sds attach`) opens
 the same dashboard against the running daemon through the admin API, from any shell on

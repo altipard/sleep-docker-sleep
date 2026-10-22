@@ -192,7 +192,7 @@ pub async fn top(cfg: Option<&Path>, args: TopArgs) -> Result<()> {
     let outcome = tokio::task::spawn_blocking(move || ui.run(cancel_ui)).await;
     cancel.cancel();
     match outcome {
-        Ok(result) => result,
+        Ok(result) => result.map(|_| ()),
         Err(e) => bail!("dashboard panicked: {e}"),
     }
 }

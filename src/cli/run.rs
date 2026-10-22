@@ -54,15 +54,25 @@ pub async fn run(explicit: Option<&Path>, args: RunArgs) -> Result<()> {
 
     if use_tui {
         let source =
-            crate::tui::LocalSource { registry: Arc::clone(&registry), logs: log_buffer, bind: cfg.admin.bind };
+            crate::tui::LocalSource { registry: Arc::clone(&registry), logs: log_buffer.clone(), bind: cfg.admin.bind };
         let ui = crate::tui::Dashboard::new(Box::new(source));
         let cancel_ui = cancel.clone();
         let outcome = tokio::task::spawn_blocking(move || ui.run(cancel_ui)).await;
-        cancel.cancel();
         match outcome {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::error!("dashboard failed: {e}"),
-            Err(e) => tracing::error!("dashboard panicked: {e}"),
+            Ok(Ok(crate::tui::Exit::Detach)) if !cancel.is_cancelled() => {
+                log_buffer.detach();
+                eprintln!("sds: dashboard detached, daemon keeps running headless (reattach: `sds top`, stop: Ctrl-C)");
+                cancel.cancelled().await;
+            }
+            Ok(Ok(crate::tui::Exit::Quit | crate::tui::Exit::Detach)) => cancel.cancel(),
+            Ok(Err(e)) => {
+                cancel.cancel();
+                tracing::error!("dashboard failed: {e}");
+            }
+            Err(e) => {
+                cancel.cancel();
+                tracing::error!("dashboard panicked: {e}");
+            }
         }
     } else {
         cancel.cancelled().await;
