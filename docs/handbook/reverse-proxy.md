@@ -1,52 +1,51 @@
-# Reverse-Proxy-Anbindung
+# Reverse proxy integration
 
-`sds` nutzt den Forward-Auth-Mechanismus, den nginx (`auth_request`), Caddy
-(`forward_auth`) und Traefik (`forwardAuth`) mitbringen. Der Proxy schickt vor jeder
-Anfrage einen kleinen Request an `sds`; die Antwort entscheidet, ob die Anfrage
-weitergeleitet wird.
+`sds` uses the forward-auth mechanism that nginx (`auth_request`), Caddy (`forward_auth`)
+and Traefik (`forwardAuth`) provide. Before every request the proxy sends a small request
+to `sds`; the answer decides whether the request is forwarded.
 
-`sds integrate <proxy> <gruppe>` erzeugt das passende Snippet. Die proxy-spezifischen
-Eigenheiten stecken im Generator; dieses Kapitel erklärt sie, damit Anpassungen möglich
-sind.
+`sds integrate <proxy> <group>` generates the matching snippet. The proxy-specific
+peculiarities live in the generator; this chapter explains them so adjustments are
+possible.
 
-## Endpunkte
+## Endpoints
 
-| Pfad | Zweck |
+| Path | Purpose |
 |---|---|
-| `GET /_sds/check/<gruppe>` | Forward-Auth. `200`, wenn die Gruppe läuft. Sonst wird sie geweckt; je nach `wake` hält `sds` die Anfrage oder antwortet mit Status `503` (bzw. `?deny=…`) und Warteseite. |
-| `GET /_sds/wait/<gruppe>` | Warteseite ohne Auth-Semantik, für Proxys, die den Body der Check-Antwort nicht durchreichen (nginx). |
+| `GET /_sds/check/<group>` | Forward-auth. `200` when the group is running. Otherwise it is woken; depending on `wake`, `sds` holds the request or answers with status `503` (or `?deny=…`) and the waiting page. |
+| `GET /_sds/wait/<group>` | Waiting page without auth semantics, for proxies that cannot relay the body of the check response (nginx). |
 
-Parameter für `/_sds/check`:
+Parameters for `/_sds/check`:
 
-| Parameter | Wirkung |
+| Parameter | Effect |
 |---|---|
-| `?mode=hold` / `?mode=page` | übersteuert `wake` der Gruppe |
-| `?deny=403` | Statuscode für „nicht bereit“ (Standard `503`) |
+| `?mode=hold` / `?mode=page` | overrides the group's `wake` |
+| `?deny=403` | status code for "not ready" (default `503`) |
 
-Die Check-Antwort trägt immer den Header `X-SDS-State` (`running`, `starting`, `failed`,
-`overloaded`, `unknown-group`). Browser (`Accept: text/html`) bekommen die HTML-Warteseite
-mit `Refresh`-Header, andere Clients JSON mit `Retry-After`.
+The check response always carries the header `X-SDS-State` (`running`, `starting`,
+`failed`, `overloaded`, `unknown-group`). Browsers (`Accept: text/html`) receive the HTML
+waiting page with a `Refresh` header, other clients JSON with `Retry-After`.
 
-Unbekannte Gruppen beantwortet `sds` mit `200` und einer Warnung im Log (Fail-open): ein
-Tippfehler in der Proxy-Konfiguration darf keine Seite lahmlegen.
+Unknown groups are answered with `200` and a warning in the log (fail-open): a typo in the
+proxy configuration must not take a site down.
 
-## Netzwerkpfad zu `sds`
+## Network path to `sds`
 
-| `sds` läuft … | Proxy läuft … | Adresse im Snippet |
+| `sds` runs … | proxy runs … | address in the snippet |
 |---|---|---|
-| auf dem Host | auf dem Host (nginx) | `http://127.0.0.1:9900` |
-| auf dem Host | im Container (Caddy/Traefik) | `http://host.docker.internal:9900`; dafür `extra_hosts: ["host.docker.internal:host-gateway"]` im Proxy-Service und `admin.bind = "0.0.0.0:9900"` oder die Docker-Bridge-Adresse plus Token |
-| im Container | im Container, gleiches Netz | `http://sds:9900` |
+| on the host | on the host (nginx) | `http://127.0.0.1:9900` |
+| on the host | in a container (Caddy/Traefik) | `http://host.docker.internal:9900`; needs `extra_hosts: ["host.docker.internal:host-gateway"]` on the proxy service and `admin.bind = "0.0.0.0:9900"` or the Docker bridge address plus a token |
+| in a container | in a container, same network | `http://sds:9900` |
 
-Sobald `admin.bind` nicht mehr `127.0.0.1` ist, einen `admin.token` setzen. Die Snippets
-senden ihn als `X-SDS-Token`.
+As soon as `admin.bind` is no longer `127.0.0.1`, set an `admin.token`. The snippets send
+it as `X-SDS-Token`.
 
 ## Timeouts
 
-Bei `wake = hold` hält `sds` die Check-Anfrage bis zu `hold_timeout` (Standard 60 s). Der
-Proxy darf diese Verbindung nicht früher abbrechen. Die Snippets setzen den jeweiligen
-Lese-Timeout auf `hold_timeout + 5 s`. Wer `hold_timeout` erhöht, muss den Proxy-Wert
-mitziehen; `sds integrate --hold-timeout <sek>` erzeugt das Snippet entsprechend.
+With `wake = hold`, `sds` holds the check request for up to `hold_timeout` (default 60 s).
+The proxy must not abort this connection earlier. The snippets set the respective read
+timeout to `hold_timeout + 5 s`. Whoever raises `hold_timeout` must raise the proxy value
+too; `sds integrate --hold-timeout <sec>` generates the snippet accordingly.
 
 ## nginx
 
@@ -54,21 +53,21 @@ mitziehen; `sds integrate --hold-timeout <sek>` erzeugt das Snippet entsprechend
 sds integrate nginx shop --host shop.example.com --upstream http://127.0.0.1:18080
 ```
 
-Besonderheiten von `auth_request`:
+Peculiarities of `auth_request`:
 
-- Es akzeptiert nur `2xx` (erlauben) sowie `401`/`403` (ablehnen); alles andere wird zu
-  `500`. Das Snippet ruft deshalb `/_sds/check/shop?deny=403` auf und wandelt `403` per
-  `error_page 403 = @sds_wait` in die Warteseite um (`/_sds/wait/shop`).
-- Der Body der Subrequest-Antwort geht verloren, daher der Umweg über `@sds_wait`.
-- `proxy_intercept_errors` bleibt `off`: Ein `403` der Anwendung selbst wird nicht
-  angefasst, nur das von `auth_request` erzeugte.
-- **Fail-open:** Ist `sds` nicht erreichbar, erzeugt nginx intern `500`/`502`;
-  `error_page 500 502 = @sds_bypass` leitet dann direkt an die Anwendung weiter. Diese
-  Zeile fängt auch andere nginx-interne 500er; wer das nicht möchte, entfernt sie und
-  nimmt Fehler während eines `sds`-Ausfalls in Kauf.
-- `map $http_upgrade $connection_upgrade` einmal im `http {}`-Kontext anlegen, damit
-  WebSockets funktionieren.
-- `proxy_read_timeout` im Check-Location muss `hold_timeout` übersteigen.
+- It only accepts `2xx` (allow) and `401`/`403` (deny); everything else becomes `500`. The
+  snippet therefore calls `/_sds/check/shop?deny=403` and turns `403` into the waiting page
+  via `error_page 403 = @sds_wait` (`/_sds/wait/shop`).
+- The body of the subrequest response is lost, hence the detour through `@sds_wait`.
+- `proxy_intercept_errors` stays `off`: a `403` from the application itself is untouched,
+  only the one generated by `auth_request`.
+- **Fail-open:** if `sds` is unreachable, nginx generates `500`/`502` internally;
+  `error_page 500 502 = @sds_bypass` then forwards directly to the application. This line
+  also catches other nginx-internal 500s; if that is unwanted, remove it and accept errors
+  during an `sds` outage.
+- Create `map $http_upgrade $connection_upgrade` once in the `http {}` context so that
+  WebSockets work.
+- `proxy_read_timeout` in the check location must exceed `hold_timeout`.
 
 ## Caddy
 
@@ -77,16 +76,15 @@ sds integrate caddy shop --host shop.example.com --upstream http://app:80 \
     --sds-url http://host.docker.internal:9900
 ```
 
-- `forward_auth` reicht Nicht-2xx-Antworten samt Body an den Client durch; die Warteseite
-  kommt direkt von `sds`, `?deny` ist nicht nötig.
-- `copy_headers X-SDS-State` macht den Zustand in Caddy-Logs sichtbar.
-- **Kein Fail-open:** `forward_auth` ist intern ein `reverse_proxy`; ist `sds` nicht
-  erreichbar, entsteht ein Transportfehler, den `handle_response` nicht abfängt, und der
-  Client sieht `502`. Ein `handle_errors`-Block könnte in dem Fall an die Anwendung
-  weiterleiten, kann aber einen Ausfall von `sds` nicht von einem Ausfall der Anwendung
-  unterscheiden; deshalb erzeugt das Snippet ihn nicht. Stattdessen `sds` als
-  überwachten Dienst betreiben.
-- `response_header_timeout` muss `hold_timeout` übersteigen.
+- `forward_auth` passes non-2xx responses including the body through to the client; the
+  waiting page comes directly from `sds`, `?deny` is not needed.
+- `copy_headers X-SDS-State` makes the state visible in Caddy logs.
+- **No fail-open:** `forward_auth` is internally a `reverse_proxy`; if `sds` is
+  unreachable, a transport error occurs that `handle_response` does not catch, and the
+  client sees `502`. A `handle_errors` block could forward to the application in that case
+  but cannot distinguish an `sds` outage from an application outage; therefore the snippet
+  does not generate one. Run `sds` as a supervised service instead.
+- `response_header_timeout` must exceed `hold_timeout`.
 
 ## Traefik
 
@@ -95,26 +93,26 @@ sds integrate traefik shop --host shop.example.com --upstream http://app:80 \
     --sds-url http://host.docker.internal:9900
 ```
 
-Das Snippet enthält die Variante als dynamische Datei und als Container-Labels.
+The snippet contains the variant as a dynamic file and as container labels.
 
-- `forwardAuth` reicht Nicht-2xx-Antworten an den Client durch, Warteseite inklusive.
-- `authResponseHeaders: [X-SDS-State]` kopiert den Zustand in die Antwort.
-- **Kein Fail-open:** Traefik hat für `forwardAuth` keinen Bypass. Ist `sds` nicht
-  erreichbar, antwortet Traefik mit `500`. `sds` deshalb als überwachten Dienst
-  (`Restart=always`) betreiben; ein Neustart dauert unter einer Sekunde.
-- `forwardAuthTimeout` (Traefik ≥ 3.3) muss `hold_timeout` übersteigen. Ältere Versionen
-  nutzen den globalen `serversTransport`-Timeout.
-- Token: Traefik kann keine festen Header an den Auth-Dienst anhängen. Entweder `sds`
-  ohne Token in einem privaten Docker-Netz betreiben (empfohlen) oder den Token über
-  `headers`-Middleware vorlagern.
+- `forwardAuth` passes non-2xx responses through to the client, waiting page included.
+- `authResponseHeaders: [X-SDS-State]` copies the state into the response.
+- **No fail-open:** Traefik has no bypass for `forwardAuth`. If `sds` is unreachable,
+  Traefik answers `500`. Therefore run `sds` as a supervised service (`Restart=always`); a
+  restart takes under a second.
+- `forwardAuthTimeout` (Traefik ≥ 3.3) must exceed `hold_timeout`. Older versions use the
+  global `serversTransport` timeout.
+- Token: Traefik cannot attach fixed headers to the auth service. Either run `sds` without
+  a token on a private Docker network (recommended) or add the token with a `headers`
+  middleware in front.
 
-## Prüfen
+## Verifying
 
 ```bash
 sds sleep shop
-curl -sI https://shop.example.com/ | head -1     # 503 + Warteseite oder nach Hold 200
-sds status                                      # Gruppe läuft wieder
+curl -sI https://shop.example.com/ | head -1     # 503 + waiting page, or 200 after hold
+sds status                                      # group is running again
 ```
 
-In der Web-Übersicht (`http://127.0.0.1:9900/`) erscheinen die Ereignisse „waking“ und
-„running“ mit Zeitstempel.
+The web overview (`http://127.0.0.1:9900/`) shows the events "waking" and "running" with
+timestamps.

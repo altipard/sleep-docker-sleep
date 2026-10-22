@@ -1,34 +1,33 @@
 # Installation
 
-## Voraussetzungen
+## Requirements
 
-- Docker Engine 20.10 oder neuer (API 1.41+), Docker Compose v2 optional.
-- Linux (systemd) oder macOS (launchd). Windows wird nicht unterstützt.
-- Zugriff auf den Docker-Socket (`/var/run/docker.sock`) für den Benutzer, unter dem `sds`
-  läuft. Hinweis: Wer den Socket lesen und schreiben darf, hat faktisch Root-Rechte auf
-  dem Host. `sds` daher als `root` oder als dedizierten Benutzer in der Gruppe `docker`
-  betreiben, nicht als Anwendungsnutzer.
+- Docker Engine 20.10 or newer (API 1.41+), Docker Compose v2 optional.
+- Linux (systemd) or macOS (launchd). Windows is not supported.
+- Access to the Docker socket (`/var/run/docker.sock`) for the user `sds` runs as. Note:
+  whoever can read and write the socket effectively has root on the host. Run `sds` as
+  `root` or as a dedicated user in the `docker` group, never as an application user.
 
-## Variante A: Binary auf dem Host (empfohlen)
+## Option A: binary on the host (recommended)
 
-Das Release enthält ein statisch gelinktes Linux-Binary (`sds-linux-x86_64`). Auf macOS
-oder anderen Architekturen aus dem Quellcode bauen:
+The release contains a statically linked Linux binary (`sds-linux-x86_64`). On macOS or
+other architectures build from source:
 
 ```bash
 cargo build --release          # Rust 1.85+
 sudo install -m 755 target/release/sds /usr/local/bin/sds
 ```
 
-Konfiguration nach `/etc/sds/sds.toml` (siehe [Konfiguration](konfiguration.md)), dann:
+Put the configuration in `/etc/sds/sds.toml` (see [Configuration](configuration.md)), then:
 
 ```bash
 sudo sds service install --config /etc/sds/sds.toml
 ```
 
-`service install` schreibt die passende Unit (`/etc/systemd/system/sds.service` bzw.
-`/Library/LaunchDaemons/com.zilicon.sds.plist`) und gibt die Befehle zum Aktivieren aus.
-`sds service show` zeigt die Unit nur an, ohne etwas zu schreiben. Mit `--user <name>`
-läuft der Dienst unter einem anderen Benutzer.
+`service install` writes the matching unit (`/etc/systemd/system/sds.service` or
+`/Library/LaunchDaemons/com.zilicon.sds.plist`) and prints the commands to enable it.
+`sds service show` only prints the unit without writing anything. `--user <name>` runs
+the service as a different user.
 
 systemd:
 
@@ -45,10 +44,10 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/com.zilicon.sds.plist
 tail -f /var/log/sds.log
 ```
 
-## Variante B: als Container
+## Option B: as a container
 
-Sinnvoll, wenn der Reverse-Proxy selbst als Container läuft (Traefik, projekteigener
-Caddy) und `sds` im selben Docker-Netz erreichbar sein soll. Vorlage:
+Useful when the reverse proxy itself runs as a container (Traefik, a project's own Caddy)
+and `sds` should be reachable on the same Docker network. Template:
 `examples/sds-as-container.compose.yaml`.
 
 ```yaml
@@ -64,29 +63,28 @@ services:
       sds.keep_awake: "true"
 ```
 
-In `sds.toml` muss dann `admin.bind = "0.0.0.0:9900"` stehen, und der Reverse-Proxy
-verwendet `http://sds:9900/_sds/check/<gruppe>`. Den Port **nicht** nach außen
-veröffentlichen, oder einen `admin.token` setzen.
+`sds.toml` must then contain `admin.bind = "0.0.0.0:9900"`, and the reverse proxy uses
+`http://sds:9900/_sds/check/<group>`. Do **not** publish the port to the outside, or set an
+`admin.token`.
 
-Health-Checks mit `http://…` oder `tcp://…` werden aus dem `sds`-Container heraus
-ausgeführt. Adressen also so angeben, wie sie von dort erreichbar sind (`http://app:3000/`
-statt `127.0.0.1:18080`).
+Health checks with `http://…` or `tcp://…` are executed from inside the `sds` container.
+Give addresses as reachable from there (`http://app:3000/` instead of `127.0.0.1:18080`).
 
-## Mehrere Hosts
+## Multiple hosts
 
-Ein `sds` pro Host. Es gibt bewusst keine zentrale Instanz; jede verwaltet nur den
-lokalen Docker-Daemon. Eine Übersicht über mehrere Hosts lässt sich über die
-[HTTP-API](api.md) (`/api/v1/status`) bauen.
+One `sds` per host. There is deliberately no central instance; each one manages only the
+local Docker daemon. An overview across hosts can be built on the [HTTP API](api.md)
+(`/api/v1/status`).
 
-## Aktualisieren
+## Upgrading
 
-Binary austauschen und Dienst neu starten:
+Replace the binary and restart the service:
 
 ```bash
 sudo install -m 755 sds /usr/local/bin/sds && sudo systemctl restart sds
 ```
 
-Beim Neustart bleiben laufende Container laufen und schlafende schlafen; `sds` liest den
-Ist-Zustand beim Start aus Docker. Anfragen während des Neustarts laufen bei nginx per
-Fail-open an die Anwendung durch; bei Caddy und Traefik gibt es für die Dauer des
-Neustarts (unter einer Sekunde) Fehler 502/500, siehe [Grenzen](grenzen.md).
+Across the restart, running containers keep running and sleeping ones keep sleeping;
+`sds` reads the current state from Docker at startup. Requests during the restart pass
+through to the application via fail-open on nginx; on Caddy and Traefik there are 502/500
+errors for the duration of the restart (under a second), see [Limitations](limitations.md).

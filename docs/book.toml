@@ -1,6 +1,6 @@
 [book]
-title = "sleep-docker-sleep – Handbuch"
-language = "de"
+title = "sleep-docker-sleep – Handbook"
+language = "en"
 src = "handbook"
 
 [output.html]

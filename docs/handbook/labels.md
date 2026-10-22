@@ -1,74 +1,72 @@
-# Labels und Gruppen
+# Labels and groups
 
-Container beschreiben selbst, wie `sds` mit ihnen umgehen soll. Projektteams müssen
-dafür nur Labels ins Compose-File schreiben; eine zentrale Liste ist nicht nötig.
+Containers describe themselves how `sds` should treat them. Project teams only have to put
+labels into their Compose file; no central list is needed.
 
-## Gruppenbildung
+## Forming groups
 
-Eine Gruppe ist die Einheit, die gemeinsam schläft und aufwacht. Der Name ergibt sich aus:
+A group is the unit that sleeps and wakes together. Its name comes from:
 
-1. `sds.group`, falls gesetzt,
-2. sonst dem Compose-Projekt (`com.docker.compose.project`, in der Regel der Ordnername),
-3. sonst dem Containernamen.
+1. `sds.group`, if set,
+2. otherwise the Compose project (`com.docker.compose.project`, usually the directory name),
+3. otherwise the container name.
 
-Alle Container mit `sds.enable=true` und demselben Gruppennamen bilden eine Gruppe,
-auch über Compose-Projekte hinweg. Der Name muss zur URL passen: keine Leerzeichen, kein
-`/`.
+All containers with `sds.enable=true` and the same group name form one group, even across
+Compose projects. The name must be URL-safe: no whitespace, no `/`.
 
-Typische Muster:
+Typical patterns:
 
 | Situation | Labels |
 |---|---|
-| Host-nginx vor dem Projekt, alles darf schlafen | `sds.enable=true` auf allen Services |
-| Projekt bringt eigenen Caddy/Traefik mit | `sds.enable=true` auf App und DB, `sds.keep_awake=true` auf dem Proxy |
-| Zwei Projekte teilen sich eine Datenbank | `sds.group=shared-db` auf allen Beteiligten |
-| Nur die App soll schlafen, die DB läuft durch | `sds.enable=true` nur auf der App |
+| Host nginx in front of the project, everything may sleep | `sds.enable=true` on all services |
+| Project brings its own Caddy/Traefik | `sds.enable=true` on app and db, `sds.keep_awake=true` on the proxy |
+| Two projects share a database | `sds.group=shared-db` on all participants |
+| Only the app should sleep, the db keeps running | `sds.enable=true` only on the app |
 
-Beim Aufwecken startet `sds` alle Mitglieder in alphabetischer Reihenfolge und wartet dann
-auf den Health-Check. Compose-Abhängigkeiten (`depends_on`) werden nicht ausgewertet;
-Anwendungen, die eine noch nicht bereite Datenbank nicht verkraften, brauchen eine
-Restart-Policy (`restart: unless-stopped`) oder einen HEALTHCHECK, auf den `sds` wartet.
+When waking, `sds` starts all members in alphabetical order and then waits for the health
+check. Compose dependencies (`depends_on`) are not evaluated; applications that cannot
+cope with a database that is not ready yet need a restart policy
+(`restart: unless-stopped`) or a HEALTHCHECK that `sds` waits for.
 
-## Referenz
+## Reference
 
-| Label | Werte | Beschreibung |
+| Label | Values | Description |
 |---|---|---|
-| `sds.enable` | `true`/`false` | Container wird Mitglied seiner Gruppe. Ohne dieses Label ignoriert `sds` den Container. |
-| `sds.keep_awake` | `true` | Container wird nie von `sds` gestoppt. Dokumentiert Absicht, z. B. beim projekteigenen Proxy. |
-| `sds.group` | Name | Explizite Gruppe statt Compose-Projekt. |
-| `sds.idle_timeout` | Dauer | Siehe [Konfiguration](konfiguration.md#defaults-und-gruppen-einstellungen). |
-| `sds.start_timeout` | Dauer | |
-| `sds.stop_timeout` | Dauer | |
-| `sds.start_grace` | Dauer | |
+| `sds.enable` | `true`/`false` | The container becomes a member of its group. Without this label `sds` ignores the container. |
+| `sds.keep_awake` | `true` | The container is never stopped by `sds`. Documents intent, e.g. on the project's own proxy. |
+| `sds.group` | name | Explicit group instead of the Compose project. |
+| `sds.idle_timeout` | duration | See [Configuration](configuration.md#defaults-and-group-settings). |
+| `sds.start_timeout` | duration | |
+| `sds.stop_timeout` | duration | |
+| `sds.start_grace` | duration | |
 | `sds.health` | `docker`, `grace`, `http://…`, `tcp://host:port` | |
 | `sds.wake` | `hold`, `page` | |
-| `sds.hold_timeout` | Dauer | |
-| `sds.max_waiters` | Zahl | |
-| `sds.proxy.listen` | Adresse | Nativer Proxy, siehe [eigenes Kapitel](nativer-proxy.md). |
+| `sds.hold_timeout` | duration | |
+| `sds.max_waiters` | number | |
+| `sds.proxy.listen` | address | Native proxy, see [its chapter](native-proxy.md). |
 | `sds.proxy.upstream` | `host:port` | |
 | `sds.proxy.mode` | `http`, `tcp` | |
 
-Unbekannte `sds.*`-Labels sind Fehler: der Container wird ignoriert und `sds check`
-nennt das Label. Das verhindert, dass ein Tippfehler wie `sds.idle_timout` unbemerkt
-den Standardwert aktiviert.
+Unknown `sds.*` labels are errors: the container is ignored and `sds check` names the
+label. This prevents a typo like `sds.idle_timout` from silently activating the default.
 
-Gruppenweite Einstellungen (`idle_timeout`, `health`, …) stehen sinnvollerweise auf einem
-Container. Stehen sie auf mehreren und widersprechen sich, gewinnt der alphabetisch erste
-Containername; die Web-Übersicht zeigt eine Warnung.
+Group-wide settings (`idle_timeout`, `health`, …) sensibly live on one container. If they
+are on several and contradict each other, the alphabetically first container name wins;
+the web overview shows a warning.
 
-## Health-Check wählen
+## Choosing a health check
 
-| Ziel | Empfehlung |
+| Goal | Recommendation |
 |---|---|
-| Image hat einen brauchbaren HEALTHCHECK | `sds.health=docker` (Standard). `sds` wartet, bis alle Mitglieder mit HEALTHCHECK `healthy` melden. |
-| Kein HEALTHCHECK, HTTP-Endpunkt vorhanden | `sds.health=http://127.0.0.1:18080/healthz` (Adresse aus Sicht des `sds`-Prozesses). |
-| TCP-Dienst (Datenbank, SMTP) | `sds.health=tcp://127.0.0.1:5432` |
-| Nichts davon | `sds.health=grace` und `sds.start_grace` großzügig setzen. |
+| Image has a usable HEALTHCHECK | `sds.health=docker` (default). `sds` waits until all members with a HEALTHCHECK report `healthy`. |
+| No HEALTHCHECK, HTTP endpoint available | `sds.health=http://127.0.0.1:18080/healthz` (address as seen from the `sds` process). |
+| TCP service (database, SMTP) | `sds.health=tcp://127.0.0.1:5432` |
+| None of the above | `sds.health=grace` and a generous `sds.start_grace`. |
 
-Stürzt ein Mitglied während des Startens ab (`exited`), bricht `sds` sofort ab und meldet
-die Gruppe als `failed`, statt bis `start_timeout` zu warten.
+If a member crashes while starting (`exited`), `sds` aborts immediately and reports the
+group as `failed` instead of waiting until `start_timeout`.
 
-## Beispiel: Compose-Projekt mit eigenem Caddy
+## Example: Compose project with its own Caddy
 
 ```yaml
 services:
@@ -93,18 +91,18 @@ services:
       sds.stop_timeout: "60s"
 ```
 
-Nach `docker compose up -d` erscheint die Gruppe `shop` in `sds status`. Caddy läuft
-durch und fragt `sds` über `host.docker.internal:9900` an, siehe
-[Reverse-Proxy-Anbindung](reverse-proxy.md).
+After `docker compose up -d` the group `shop` appears in `sds status`. Caddy keeps
+running and asks `sds` via `host.docker.internal:9900`, see
+[Reverse proxy integration](reverse-proxy.md).
 
-## Wechselwirkung mit Restart-Policies
+## Interaction with restart policies
 
-`docker stop` durch `sds` setzt bei `restart: always` und `restart: unless-stopped` den
-Container nicht erneut in Gang; Docker merkt sich den manuellen Stopp. Zwei Eigenheiten:
+A `docker stop` by `sds` does not restart a container with `restart: always` or
+`restart: unless-stopped`; Docker remembers the manual stop. Two peculiarities:
 
-- Nach einem Neustart des Docker-Daemons (oder des Hosts) startet `restart: always`
-  gestoppte Container wieder. `sds` erkennt das und führt die Gruppe als `running`; sie
-  schläft nach `idle_timeout` erneut ein.
-- Stürzt eine laufende Anwendung ab und Docker startet sie per Restart-Policy neu, sieht
-  `sds` kurz `stopped`, dann wieder `running`. Das ist beabsichtigt und sichtbar im
-  Ereignisprotokoll.
+- After a restart of the Docker daemon (or the host), `restart: always` brings stopped
+  containers back. `sds` detects that and lists the group as `running`; it goes back to
+  sleep after `idle_timeout`.
+- If a running application crashes and Docker restarts it via the restart policy, `sds`
+  briefly sees `stopped`, then `running` again. This is intended and visible in the event
+  log.

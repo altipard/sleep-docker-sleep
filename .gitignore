@@ -2,3 +2,4 @@
 /sds.toml
 *.log
 .DS_Store
+/docs/book
