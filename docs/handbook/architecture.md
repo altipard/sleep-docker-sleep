@@ -61,8 +61,11 @@ src/
 - Observation errors are not state: an `inspect` that fails for any reason other than
   "not found" keeps the last known state, so a Docker API hiccup never puts a busy group
   to sleep. Inspects run in parallel with a 5 s bound each.
-- Members left running by a failed or partial start are stopped once `idle_timeout` has
-  elapsed, and `sds sleep` stops them right away.
+- `failed` is left only by a new start attempt, which probes health. Containers that run
+  but never became healthy do not make the group `running`; they are stopped once
+  `idle_timeout` has elapsed, and `sds sleep` stops them right away.
+- A failed `docker stop` is retried with a backoff of one `idle_timeout`, and the error
+  stays visible in `last_error` until a stop succeeds.
 
 ## Tests
 

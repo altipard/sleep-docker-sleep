@@ -46,6 +46,10 @@ pub struct GroupSnapshot {
     /// only, used for the retry pause so a clock jump cannot extend or skip it.
     #[serde(skip)]
     pub state_since_mono_ms: u64,
+    /// Monotonic ms of the last failed start, if the group has not become running since.
+    /// In-process only; anchors the retry pause for traffic-driven wakes.
+    #[serde(skip)]
+    pub failed_at_mono_ms: Option<u64>,
     /// Wall clock (epoch ms) of the last request, if any.
     pub last_activity_ms: Option<u64>,
     pub inflight: u64,
@@ -67,6 +71,7 @@ impl GroupSnapshot {
             state: StateKind::Stopped,
             state_since_ms: 0,
             state_since_mono_ms: 0,
+            failed_at_mono_ms: None,
             last_activity_ms: None,
             inflight: 0,
             requests_total: 0,

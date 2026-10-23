@@ -120,7 +120,10 @@ impl Registry {
         for (name, spec) in wanted {
             match entries.get_mut(&name) {
                 Some(entry) => {
-                    if entry.spec != spec {
+                    // A proxy whose bind failed (port still held by a listener that was
+                    // just stopped) is retried on every discovery, not only on a change.
+                    let proxy_missing = spec.settings.proxy.is_some() && entry.proxy.is_none();
+                    if entry.spec != spec || proxy_missing {
                         if entry.spec.members != spec.members {
                             self.bus.emit(SdsEvent::new(
                                 &name,

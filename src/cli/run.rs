@@ -190,9 +190,12 @@ async fn wait_for_shutdown(cancel: CancellationToken, _config: Option<PathBuf>) 
             }
         };
         let mut hup = signal(SignalKind::hangup()).ok();
+        // Created once: a fresh ctrl_c() per iteration would miss a SIGINT arriving between.
+        let ctrl_c = tokio::signal::ctrl_c();
+        tokio::pin!(ctrl_c);
         loop {
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => { tracing::info!("SIGINT received"); break; }
+                _ = &mut ctrl_c => { tracing::info!("SIGINT received"); break; }
                 _ = term.recv() => { tracing::info!("SIGTERM received"); break; }
                 _ = async { match hup.as_mut() { Some(h) => { h.recv().await; } None => std::future::pending::<()>().await } } => {
                     tracing::info!("SIGHUP received: configuration reload is not supported yet; restart the service to apply changes");
