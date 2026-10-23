@@ -33,8 +33,12 @@ group itself keeps working via forward-auth.
 
 | Mode | Behaviour |
 |---|---|
-| `http` | Understands requests. Sleeping group: hold or waiting page (503) depending on `wake`. WebSocket upgrades are passed through. Bodies are streamed, not buffered. Header read timeout 30 s. Sets `X-Forwarded-For` and `X-Forwarded-Proto`. |
-| `tcp` | Opaque byte stream (databases, SMTP, SSH). The connection is accepted, the group woken, after readiness the upstream is connected and bytes are copied both ways. No bytes flow before readiness; `wake = page` has no effect. |
+| `http` | Understands requests. Sleeping group: hold or waiting page (503) depending on `wake`. WebSocket upgrades are passed through. Bodies are streamed, not buffered. Header read timeout 30 s, upstream response-header timeout 60 s (`504`), hop-by-hop headers are stripped. Sets `X-Forwarded-For` and `X-Forwarded-Proto`. |
+| `tcp` | Opaque byte stream (databases, SMTP, SSH). The connection is accepted, the group woken, after readiness the upstream is connected and bytes are copied both ways. No bytes flow before readiness; the connection is always held (`wake = page` has no effect) and dropped after `hold_timeout`. |
+
+Each listener accepts at most 1024 simultaneous connections; further clients wait in the
+accept queue. Changing `upstream` or `mode` of a running proxy keeps the socket and only
+restarts the accept loop; established connections finish with the old settings.
 
 ## Idle detection
 

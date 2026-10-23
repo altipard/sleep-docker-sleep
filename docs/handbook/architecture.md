@@ -31,28 +31,38 @@ src/
 - **Supervisor** lists containers periodically and on create/destroy/rename events, builds
   deterministic `GroupSpec`s with `discover()` and calls `Registry::apply`.
 - **Registry** holds one actor (tokio task) per group, its `GroupHandle` and optionally a
-  proxy listener. New groups are started, changed ones informed via `Command::Update`,
-  vanished ones shut down.
+  proxy listener. New groups are started, changed ones receive the new `GroupSpec` through
+  a `watch` channel (latest value wins, nothing is ever dropped), vanished ones are
+  cancelled. On shutdown the registry waits for running `docker stop`s.
 - **Actor** owns the state machine (`stopped → starting → running → stopping`, `failed`).
   Long operations (`docker start` + health probing, `docker stop`) run in their own tasks
   so the actor keeps reacting to commands and events. The state is published as a
   `GroupSnapshot` over a `watch` channel.
 - **GroupHandle** is the interface for request paths: `touch()` (two atomics),
-  `ensure_ready()` (waits on the `watch` channel), `request_wake()` (`try_send`).
+  `ensure_ready()` (waits on the `watch` channel), `request_wake()` (sets a flag and pokes
+  the actor through a `Notify`; idempotent, never lost). `force_wake()` is the operator
+  variant used by the API and the dashboard.
 
 ## Guarantees in the request path
 
 - No Docker call in the request path. Handlers read the `watch` snapshot and write
   atomics in `Activity`.
-- One start per group no matter how many requests wait: `Command::Wake` is idempotent,
-  the actor only starts from `stopped`/`failed`.
+- One start per group no matter how many requests wait: a wake is a flag, not a queued
+  message, and the actor only starts from `stopped`/`failed`.
 - Held requests are bounded by `max_waiters`; beyond that an immediate 503.
 - No buffering of whole bodies in the native proxy; `copy_bidirectional` and hyper streams
   with backpressure over TCP.
 - Stop only when `inflight == 0` and `idle_timeout` has elapsed; a wake during `stopping`
   is remembered and executed right afterwards.
-- After a failed start, requests are answered immediately for 10 s
-  (`FAILED_RETRY_INTERVAL_MS`), then the next one triggers a new attempt.
+- After a failed start, traffic-driven wakes are ignored by the actor for 10 s
+  (`FAILED_RETRY_INTERVAL`, measured on a monotonic clock) and requests are answered
+  immediately; then the next one triggers a new attempt. `sds wake` and the dashboard
+  bypass the pause.
+- Observation errors are not state: an `inspect` that fails for any reason other than
+  "not found" keeps the last known state, so a Docker API hiccup never puts a busy group
+  to sleep. Inspects run in parallel with a 5 s bound each.
+- Members left running by a failed or partial start are stopped once `idle_timeout` has
+  elapsed, and `sds sleep` stops them right away.
 
 ## Tests
 

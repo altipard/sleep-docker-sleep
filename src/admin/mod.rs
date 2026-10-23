@@ -9,6 +9,10 @@
 //! | GET    | `/healthz`                    | liveness of `sds` itself                  |
 //! | GET    | `/_sds/check/{group}`         | forward-auth: 200 when running, else wake |
 //! | GET    | `/_sds/wait/{group}`          | waiting page (for nginx `error_page`)     |
+//!
+//! `/_sds/wait` is deliberately outside the token layer and triggers a wake: it is the page
+//! a browser lands on after nginx denied the request, and it must work without credentials.
+//! A wake is what any request to the site would cause anyway.
 //! | GET    | `/api/v1/status`              | everything the UI shows                   |
 //! | GET    | `/api/v1/groups/{group}`      | one group                                 |
 //! | POST   | `/api/v1/groups/{group}/wake` | start now (`?wait=true` blocks until ready)|
@@ -19,7 +23,7 @@ pub mod api;
 mod auth;
 mod forward_auth;
 mod page;
-pub use page::page_for_outcome;
+pub use page::{OutcomeText, page_for_outcome};
 mod web;
 
 use std::sync::Arc;

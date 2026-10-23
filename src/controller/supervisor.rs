@@ -51,7 +51,7 @@ impl Supervisor {
             }
         }
         events_task.abort();
-        self.registry.shutdown();
+        self.registry.shutdown().await;
     }
 
     async fn discover_once(&self) {

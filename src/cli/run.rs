@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::Args;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::admin::{self, AppState};
@@ -31,6 +32,12 @@ pub async fn run(explicit: Option<&Path>, args: RunArgs) -> Result<()> {
     let log_buffer = crate::tui::LogBuffer::new(500);
     init_tracing(&cfg, use_tui, &log_buffer);
     tracing::info!(version = env!("CARGO_PKG_VERSION"), config = %source, "sds starting");
+    if !cfg.admin.bind.ip().is_loopback() && cfg.admin.token.is_none() {
+        tracing::warn!(
+            bind = %cfg.admin.bind,
+            "admin API is reachable from the network without a token; set admin.token in sds.toml"
+        );
+    }
 
     let backend: Arc<dyn Backend> = Arc::new(DockerEngine::connect(cfg.docker.host.as_deref())?);
     let version = backend
@@ -46,45 +53,106 @@ pub async fn run(explicit: Option<&Path>, args: RunArgs) -> Result<()> {
 
     let state =
         Arc::new(AppState { registry: Arc::clone(&registry), config: Arc::clone(&cfg), started_at: Instant::now() });
-    let admin_task = tokio::spawn(admin::serve(Arc::clone(&state), cancel.clone()));
-    let supervisor_task = tokio::spawn(Supervisor::new(Arc::clone(&registry), Arc::clone(&cfg), cancel.clone()).run());
+    let mut admin_task = Some(tokio::spawn(admin::serve(Arc::clone(&state), cancel.clone())));
+    let mut supervisor_task =
+        Some(tokio::spawn(Supervisor::new(Arc::clone(&registry), Arc::clone(&cfg), cancel.clone()).run()));
 
     // Reload on SIGHUP is reserved for a later version; today the daemon logs the request.
     let signal_task = tokio::spawn(wait_for_shutdown(cancel.clone(), explicit.map(Path::to_path_buf)));
 
-    if use_tui {
+    let result = if use_tui {
         let source =
             crate::tui::LocalSource { registry: Arc::clone(&registry), logs: log_buffer.clone(), bind: cfg.admin.bind };
         let ui = crate::tui::Dashboard::new(Box::new(source));
         let cancel_ui = cancel.clone();
-        let outcome = tokio::task::spawn_blocking(move || ui.run(cancel_ui)).await;
-        match outcome {
-            Ok(Ok(crate::tui::Exit::Detach)) if !cancel.is_cancelled() => {
-                log_buffer.detach();
-                eprintln!("sds: dashboard detached, daemon keeps running headless (reattach: `sds top`, stop: Ctrl-C)");
-                cancel.cancelled().await;
-            }
-            Ok(Ok(crate::tui::Exit::Quit | crate::tui::Exit::Detach)) => cancel.cancel(),
-            Ok(Err(e)) => {
-                cancel.cancel();
-                tracing::error!("dashboard failed: {e}");
-            }
-            Err(e) => {
-                cancel.cancel();
-                tracing::error!("dashboard panicked: {e}");
+        let mut ui_task = tokio::task::spawn_blocking(move || ui.run(cancel_ui));
+        tokio::select! {
+            outcome = &mut ui_task => match outcome {
+                Ok(Ok(crate::tui::Exit::Detach)) if !cancel.is_cancelled() => {
+                    log_buffer.detach();
+                    eprintln!("sds: dashboard detached, daemon keeps running headless (reattach: `sds top`, stop: Ctrl-C)");
+                    run_until_exit(&mut admin_task, &mut supervisor_task, &cancel).await
+                }
+                Ok(Ok(crate::tui::Exit::Quit | crate::tui::Exit::Detach)) => {
+                    cancel.cancel();
+                    Ok(())
+                }
+                Ok(Err(e)) => {
+                    cancel.cancel();
+                    Err(e.context("dashboard failed"))
+                }
+                Err(e) => {
+                    cancel.cancel();
+                    Err(anyhow::anyhow!("dashboard panicked: {e}"))
+                }
+            },
+            // A dead admin server or supervisor ends the process even while the dashboard
+            // is open; the dashboard observes the cancellation and restores the terminal.
+            early = run_until_exit(&mut admin_task, &mut supervisor_task, &cancel) => {
+                let _ = ui_task.await;
+                early
             }
         }
     } else {
-        cancel.cancelled().await;
-    }
+        run_until_exit(&mut admin_task, &mut supervisor_task, &cancel).await
+    };
 
     tracing::info!("shutting down (containers are left in their current state)");
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), supervisor_task).await;
-    if let Ok(Ok(Err(e))) = tokio::time::timeout(std::time::Duration::from_secs(5), admin_task).await {
-        return Err(e);
+    if let Some(task) = supervisor_task.take() {
+        // The registry waits for running `docker stop`s; give it its full budget plus slack.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(40), task).await;
+    }
+    if let Some(task) = admin_task.take() {
+        if let Ok(Ok(Err(e))) = tokio::time::timeout(std::time::Duration::from_secs(5), task).await {
+            if result.is_ok() {
+                signal_task.abort();
+                return Err(e);
+            }
+        }
     }
     signal_task.abort();
-    Ok(())
+    result
+}
+
+/// Run until `cancel` fires (clean exit) or one of the core tasks ends on its own, which is
+/// always an error: a port clash on the admin socket, a panic in the supervisor. Without
+/// this the daemon would keep running half-dead while looking healthy to systemd.
+async fn run_until_exit(
+    admin: &mut Option<JoinHandle<Result<()>>>,
+    supervisor: &mut Option<JoinHandle<()>>,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Ok(()),
+        res = join_once(admin) => {
+            cancel.cancel();
+            match res {
+                Ok(Ok(())) => Err(anyhow::anyhow!("admin server stopped unexpectedly")),
+                Ok(Err(e)) => Err(e),
+                Err(e) => Err(anyhow::anyhow!("admin server panicked: {e}")),
+            }
+        }
+        res = join_once(supervisor) => {
+            cancel.cancel();
+            match res {
+                Ok(()) => Err(anyhow::anyhow!("supervisor stopped unexpectedly")),
+                Err(e) => Err(anyhow::anyhow!("supervisor panicked: {e}")),
+            }
+        }
+    }
+}
+
+/// Await a task once and forget it afterwards (polling a finished `JoinHandle` panics).
+async fn join_once<T>(task: &mut Option<JoinHandle<T>>) -> Result<T, tokio::task::JoinError> {
+    match task.as_mut() {
+        Some(handle) => {
+            let result = handle.await;
+            *task = None;
+            result
+        }
+        None => std::future::pending().await,
+    }
 }
 
 fn init_tracing(cfg: &Config, use_tui: bool, buffer: &crate::tui::LogBuffer) {

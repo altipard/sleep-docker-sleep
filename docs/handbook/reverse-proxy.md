@@ -20,14 +20,16 @@ Parameters for `/_sds/check`:
 | Parameter | Effect |
 |---|---|
 | `?mode=hold` / `?mode=page` | overrides the group's `wake` |
-| `?deny=403` | status code for "not ready" (default `503`) |
+| `?deny=403` | status code for "not ready" (default `503`); only `4xx`/`5xx` are accepted, anything else falls back to `503` |
 
 The check response always carries the header `X-SDS-State` (`running`, `starting`,
 `failed`, `overloaded`, `unknown-group`). Browsers (`Accept: text/html`) receive the HTML
 waiting page with a `Refresh` header, other clients JSON with `Retry-After`.
 
 Unknown groups are answered with `200` and a warning in the log (fail-open): a typo in the
-proxy configuration must not take a site down.
+proxy configuration must not take a site down. Set `admin.unknown_group = "deny"` in
+`sds.toml` to answer with the `deny` status and an "unknown service" page instead. Either
+way, `sds` gates wake-ups; it is not an authorization layer.
 
 ## Network path to `sds`
 

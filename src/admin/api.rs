@@ -67,18 +67,13 @@ pub async fn wake(
     let Some(handle) = state.registry.get(&group) else {
         return not_found(&group);
     };
+    // Operator wake: starts even inside the retry pause after a failed attempt.
     if !params.wait {
-        handle.request_wake();
+        handle.force_wake();
         return (StatusCode::ACCEPTED, Json(serde_json::json!({ "group": group, "requested": "wake" })))
             .into_response();
     }
-    let snap = handle.snapshot();
-    handle.request_wake();
-    let outcome = if handle.is_running() {
-        WakeOutcome::Ready
-    } else {
-        handle.wait_ready(snap.settings.hold_timeout.max(Duration::from_secs(1)), snap.wakes_total).await
-    };
+    let outcome = handle.wake_and_wait().await;
     let (code, text) = match &outcome {
         WakeOutcome::Ready => (StatusCode::OK, "running".to_owned()),
         WakeOutcome::Timeout => (StatusCode::GATEWAY_TIMEOUT, "timeout".to_owned()),

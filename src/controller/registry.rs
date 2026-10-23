@@ -2,11 +2,12 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use super::actor::{self, Command};
+use super::actor::{self, ActorLink, Timing};
 use super::events::EventBus;
 use super::handle::GroupHandle;
 use super::snapshot::GroupSnapshot;
@@ -14,10 +15,11 @@ use super::{EventKind, SdsEvent};
 use crate::docker::{Backend, ContainerEvent, Discovery, GroupSpec};
 use crate::proxy::ProxyTask;
 
+/// How long `shutdown` waits for actors to finish a running `docker stop`.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+
 struct Entry {
-    handle: Arc<GroupHandle>,
-    cmd: mpsc::Sender<Command>,
-    task: JoinHandle<()>,
+    link: ActorLink,
     spec: GroupSpec,
     proxy: Option<ProxyTask>,
 }
@@ -26,6 +28,8 @@ pub struct Registry {
     backend: Arc<dyn Backend>,
     bus: Arc<EventBus>,
     container_events: broadcast::Sender<ContainerEvent>,
+    /// One HTTP client for all health probes (connection pool, DNS cache).
+    http: reqwest::Client,
     entries: RwLock<BTreeMap<String, Entry>>,
     discovery_warnings: RwLock<Vec<String>>,
     last_discovery_ms: std::sync::atomic::AtomicU64,
@@ -41,6 +45,7 @@ impl Registry {
             backend,
             bus,
             container_events,
+            http: reqwest::Client::builder().build().unwrap_or_default(),
             entries: RwLock::new(BTreeMap::new()),
             discovery_warnings: RwLock::new(Vec::new()),
             last_discovery_ms: std::sync::atomic::AtomicU64::new(0),
@@ -62,11 +67,11 @@ impl Registry {
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<GroupHandle>> {
-        self.entries.read().ok()?.get(name).map(|e| Arc::clone(&e.handle))
+        self.entries.read().ok()?.get(name).map(|e| Arc::clone(&e.link.handle))
     }
 
     pub fn handles(&self) -> Vec<Arc<GroupHandle>> {
-        self.entries.read().map(|e| e.values().map(|e| Arc::clone(&e.handle)).collect()).unwrap_or_default()
+        self.entries.read().map(|e| e.values().map(|e| Arc::clone(&e.link.handle)).collect()).unwrap_or_default()
     }
 
     pub fn snapshots(&self) -> Vec<GroupSnapshot> {
@@ -83,6 +88,9 @@ impl Registry {
 
     /// Bring the actors in line with a fresh discovery: spawn new groups, update changed
     /// ones, shut down vanished ones.
+    ///
+    /// Updates go through a `watch` channel, so a changed spec can never be dropped: the
+    /// actor always converges on the latest discovery.
     pub fn apply(&self, discovery: Discovery) {
         self.last_discovery_ms.store(super::epoch_ms(), std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut w) = self.discovery_warnings.write() {
@@ -101,12 +109,11 @@ impl Registry {
         let gone: Vec<String> = entries.keys().filter(|k| !wanted.contains_key(*k)).cloned().collect();
         for name in gone {
             if let Some(entry) = entries.remove(&name) {
-                let _ = entry.cmd.try_send(Command::Shutdown);
+                entry.link.cancel.cancel();
                 if let Some(p) = entry.proxy {
-                    p.abort();
+                    p.stop();
                 }
                 self.bus.emit(SdsEvent::new(&name, EventKind::Removed, "group removed (no containers left)"));
-                drop(entry.task);
             }
         }
 
@@ -121,7 +128,7 @@ impl Registry {
                                 format!("members changed: {}", member_list(&spec)),
                             ));
                         }
-                        let _ = entry.cmd.try_send(Command::Update(Box::new(spec.clone())));
+                        entry.link.spec_tx.send_replace(spec.clone());
                         self.sync_proxy(entry, &spec);
                         entry.spec = spec;
                     }
@@ -135,13 +142,15 @@ impl Registry {
                     for w in &spec.warnings {
                         self.bus.emit(SdsEvent::new(&name, EventKind::Warning, w.clone()));
                     }
-                    let (handle, cmd, task) = actor::spawn(
+                    let link = actor::spawn(
                         spec.clone(),
                         Arc::clone(&self.backend),
                         Arc::clone(&self.bus),
                         self.container_events.subscribe(),
+                        self.http.clone(),
+                        Timing::default(),
                     );
-                    let mut entry = Entry { handle, cmd, task, spec: spec.clone(), proxy: None };
+                    let mut entry = Entry { link, spec: spec.clone(), proxy: None };
                     self.sync_proxy(&mut entry, &spec);
                     entries.insert(name, entry);
                 }
@@ -149,17 +158,31 @@ impl Registry {
         }
     }
 
+    /// Start, stop or retune the native proxy of a group. A proxy whose `listen` address is
+    /// unchanged keeps its socket and only receives the new settings, so the port is never
+    /// rebound (and never clashes with the listener that is about to go away).
     fn sync_proxy(&self, entry: &mut Entry, spec: &GroupSpec) {
         let wanted = spec.settings.proxy.clone();
-        let current = entry.proxy.as_ref().map(|p| p.settings().clone());
+        let current = entry.proxy.as_ref().map(|p| p.settings());
         if wanted == current {
             return;
         }
+        if let (Some(proxy), Some(settings)) = (entry.proxy.as_ref(), &wanted) {
+            if proxy.listen() == settings.listen {
+                proxy.update(settings.clone());
+                self.bus.emit(SdsEvent::new(
+                    &spec.name,
+                    EventKind::Discovered,
+                    format!("native proxy on {} now {} -> {}", settings.listen, settings.mode, settings.upstream),
+                ));
+                return;
+            }
+        }
         if let Some(p) = entry.proxy.take() {
-            p.abort();
+            p.stop();
         }
         if let Some(settings) = wanted {
-            match ProxyTask::spawn(Arc::clone(&entry.handle), settings.clone(), Arc::clone(&self.bus)) {
+            match ProxyTask::spawn(Arc::clone(&entry.link.handle), settings.clone(), Arc::clone(&self.bus)) {
                 Ok(task) => {
                     self.bus.emit(SdsEvent::new(
                         &spec.name,
@@ -178,16 +201,27 @@ impl Registry {
         }
     }
 
-    /// Stop all actors (containers are left as they are).
-    pub fn shutdown(&self) {
-        if let Ok(mut entries) = self.entries.write() {
-            for entry in entries.values() {
-                let _ = entry.cmd.try_send(Command::Shutdown);
-                if let Some(p) = &entry.proxy {
-                    p.abort();
-                }
+    /// Stop all actors and proxies. Containers are left as they are, but a `docker stop`
+    /// that is already running may finish (bounded by [`SHUTDOWN_TIMEOUT`]).
+    pub async fn shutdown(&self) {
+        let tasks: Vec<JoinHandle<()>> = match self.entries.write() {
+            Ok(mut entries) => {
+                let drained: Vec<Entry> = std::mem::take(&mut *entries).into_values().collect();
+                drained
+                    .into_iter()
+                    .map(|entry| {
+                        entry.link.cancel.cancel();
+                        if let Some(p) = entry.proxy {
+                            p.stop();
+                        }
+                        entry.link.task
+                    })
+                    .collect()
             }
-            entries.clear();
+            Err(_) => Vec::new(),
+        };
+        if tokio::time::timeout(SHUTDOWN_TIMEOUT, futures_util::future::join_all(tasks)).await.is_err() {
+            tracing::warn!("some groups did not finish shutting down within {SHUTDOWN_TIMEOUT:?}");
         }
     }
 }
