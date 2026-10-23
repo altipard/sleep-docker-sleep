@@ -38,10 +38,14 @@ independently. Shared dependencies belong in the same group (`sds.group`) or sta
 Admin API and web overview speak plain HTTP. By default they listen on `127.0.0.1` only.
 For access from outside, put a reverse proxy with TLS in front.
 
-## Only one Docker daemon per instance
+## Only one Docker daemon per instance, one instance per daemon
 
-Swarm, Kubernetes and remote hosts via several sockets are not supported. One `sds` runs
-per host.
+Swarm, Kubernetes and remote hosts via several sockets are not supported. Several `sds`
+processes on one host are possible but only useful if each talks to a different Docker
+daemon (`docker.host` or `DOCKER_HOST`) and listens on its own `admin.bind`. Two
+instances on the same daemon both adopt every container with `sds.*` labels and fight
+over the same groups; there is no instance label to partition them yet, see
+[Roadmap](roadmap.md).
 
 ## Health checks from the `sds` process's point of view
 
