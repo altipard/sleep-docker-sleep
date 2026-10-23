@@ -27,7 +27,8 @@ fn token_matches(headers: &HeaderMap, expected: &str) -> bool {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
     });
-    presented.is_some_and(|p| constant_time_eq(p.trim().as_bytes(), expected.as_bytes()))
+    // An empty expected token is rejected by `Config::validate`; never let it match anyway.
+    !expected.is_empty() && presented.is_some_and(|p| constant_time_eq(p.as_bytes(), expected.as_bytes()))
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -51,5 +52,8 @@ mod tests {
         assert!(token_matches(&h, "s3cret"));
         assert!(!token_matches(&h, "other"));
         assert!(!token_matches(&HeaderMap::new(), "s3cret"));
+        let mut h = HeaderMap::new();
+        h.insert(TOKEN_HEADER, "".parse().unwrap());
+        assert!(!token_matches(&h, ""));
     }
 }

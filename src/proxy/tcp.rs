@@ -4,14 +4,25 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 
-use crate::config::ProxySettings;
-use crate::controller::{EventBus, GroupHandle, WakeOutcome};
+use crate::config::{ProxySettings, WakeMode};
+use crate::controller::{GroupHandle, WakeOutcome};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub async fn serve(listener: TcpListener, handle: Arc<GroupHandle>, settings: ProxySettings, _bus: Arc<EventBus>) {
+/// Accept loop; runs until the listener is dropped by the caller.
+pub async fn serve(
+    listener: Arc<TcpListener>,
+    handle: Arc<GroupHandle>,
+    settings: ProxySettings,
+    limit: Arc<Semaphore>,
+) {
+    let upstream: Arc<str> = Arc::from(settings.upstream.as_str());
     loop {
+        let Ok(permit) = Arc::clone(&limit).acquire_owned().await else {
+            return;
+        };
         let (client, peer) = match listener.accept().await {
             Ok(x) => x,
             Err(e) => {
@@ -21,17 +32,19 @@ pub async fn serve(listener: TcpListener, handle: Arc<GroupHandle>, settings: Pr
             }
         };
         let handle = Arc::clone(&handle);
-        let upstream = settings.upstream.clone();
+        let upstream = Arc::clone(&upstream);
         tokio::spawn(async move {
+            let _permit = permit;
             let _inflight = handle.begin_inflight();
-            match handle.ensure_ready().await {
+            // A byte stream has no "please wait" page: always hold, whatever `wake` says.
+            match handle.ensure_ready_with(Some(WakeMode::Hold)).await {
                 WakeOutcome::Ready => {}
                 outcome => {
                     tracing::debug!(group = %handle.name(), %peer, ?outcome, "dropping tcp connection");
                     return;
                 }
             }
-            let server = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&upstream)).await {
+            let server = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&*upstream)).await {
                 Ok(Ok(s)) => s,
                 Ok(Err(e)) => {
                     tracing::warn!(group = %handle.name(), %upstream, "upstream connect failed: {e}");

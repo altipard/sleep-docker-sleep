@@ -77,7 +77,7 @@ An event's `kind`: `discovered`, `removed`, `waking`, `running`, `start_failed`,
 # all sleeping groups
 curl -s http://127.0.0.1:9900/api/v1/status | jq -r '.groups[] | select(.state=="stopped") | .name'
 
-# wake a group and wait
+# wake a group and wait (an operator wake: it also retries right after a failed start)
 curl -s -X POST 'http://127.0.0.1:9900/api/v1/groups/shop/wake?wait=true' | jq .result
 
 # live events

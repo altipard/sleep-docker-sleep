@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
 use super::activity::{Activity, InflightGuard};
-use super::actor::Command;
+use super::signals::Signals;
 use super::snapshot::{GroupSnapshot, StateKind};
-use super::{FAILED_RETRY_INTERVAL_MS, epoch_ms};
+use super::{FAILED_RETRY_INTERVAL, mono_ms};
 use crate::config::WakeMode;
 
 /// What a request handler should do after asking for the group.
@@ -27,12 +27,15 @@ pub enum WakeOutcome {
 }
 
 /// Cheap, cloneable access to one group for request handlers, the API and the UI.
+///
+/// Everything here is lock-free and never touches Docker: atomics on [`Activity`], a
+/// `watch` receiver for the state and flags on [`Signals`] to poke the actor.
 #[derive(Debug)]
 pub struct GroupHandle {
     name: String,
     activity: Arc<Activity>,
     state: watch::Receiver<GroupSnapshot>,
-    cmd: mpsc::Sender<Command>,
+    signals: Arc<Signals>,
 }
 
 impl GroupHandle {
@@ -40,9 +43,9 @@ impl GroupHandle {
         name: String,
         activity: Arc<Activity>,
         state: watch::Receiver<GroupSnapshot>,
-        cmd: mpsc::Sender<Command>,
+        signals: Arc<Signals>,
     ) -> Self {
-        Self { name, activity, state, cmd }
+        Self { name, activity, state, signals }
     }
 
     pub fn name(&self) -> &str {
@@ -74,36 +77,62 @@ impl GroupHandle {
         self.activity.begin_inflight()
     }
 
-    /// Ask the actor to start the group. Non-blocking; a full queue means a wake is
-    /// already pending, which is fine.
+    /// Ask the actor to start the group because traffic arrived. Never blocks, never lost;
+    /// the actor ignores it while a failed start is still inside its retry pause.
     pub fn request_wake(&self) {
-        let _ = self.cmd.try_send(Command::Wake);
+        self.signals.request_wake();
+    }
+
+    /// Operator wake (API, TUI, CLI): starts even during the retry pause after a failure.
+    pub fn force_wake(&self) {
+        self.signals.force_wake();
     }
 
     pub fn request_sleep(&self) {
-        let _ = self.cmd.try_send(Command::Sleep);
+        self.signals.request_sleep();
     }
 
-    /// Record activity and make sure the group is (or becomes) running.
-    ///
-    /// Returns [`WakeOutcome::Ready`] immediately when it already runs. Otherwise triggers a
-    /// wake-up and, depending on `wake`, either returns [`WakeOutcome::Starting`] right away
-    /// or holds until the group is ready, fails, or `hold_timeout` elapses.
+    /// Record activity and make sure the group is (or becomes) running, using the group's
+    /// own `wake` setting.
     pub async fn ensure_ready(&self) -> WakeOutcome {
+        self.ensure_ready_with(None).await
+    }
+
+    /// Like [`ensure_ready`](Self::ensure_ready), with `mode` overriding the group's
+    /// `wake` setting (forward-auth `?mode=`, TCP proxy).
+    ///
+    /// Returns [`WakeOutcome::Ready`] immediately when the group runs. Otherwise triggers a
+    /// wake-up and, depending on the mode, either returns [`WakeOutcome::Starting`] right
+    /// away or holds until the group is ready, fails, or `hold_timeout` elapses.
+    pub async fn ensure_ready_with(&self, mode: Option<WakeMode>) -> WakeOutcome {
         self.touch();
         let before = self.snapshot();
         if before.state == StateKind::Running {
             return WakeOutcome::Ready;
         }
-        if before.state == StateKind::Failed
-            && epoch_ms().saturating_sub(before.state_since_ms) < FAILED_RETRY_INTERVAL_MS
-        {
-            return WakeOutcome::Failed(before.last_error.unwrap_or_else(|| "start failed".into()));
+        if before.in_retry_pause() {
+            // The actor would ignore the wake anyway; answer without holding the request.
+            return WakeOutcome::Failed(before.last_error.clone().unwrap_or_else(|| "start failed".into()));
         }
         self.request_wake();
-        if before.settings.wake == WakeMode::Page {
+        if mode.unwrap_or(before.settings.wake) == WakeMode::Page {
             return WakeOutcome::Starting;
         }
+        self.hold(&before).await
+    }
+
+    /// Operator wake that blocks until the group is ready (`POST …/wake?wait=true`).
+    pub async fn wake_and_wait(&self) -> WakeOutcome {
+        let before = self.snapshot();
+        if before.state == StateKind::Running {
+            return WakeOutcome::Ready;
+        }
+        self.force_wake();
+        self.hold(&before).await
+    }
+
+    /// Take a waiter slot and wait for the start triggered after `before` was taken.
+    async fn hold(&self, before: &GroupSnapshot) -> WakeOutcome {
         let Some(_slot) = self.activity.try_wait(before.settings.max_waiters) else {
             return WakeOutcome::Overloaded;
         };
@@ -129,5 +158,14 @@ impl GroupHandle {
             Ok(Err(_)) => WakeOutcome::Gone,
             Err(_) => WakeOutcome::Timeout,
         }
+    }
+}
+
+impl GroupSnapshot {
+    /// `true` while a failed start is inside [`FAILED_RETRY_INTERVAL`]; traffic-driven wakes
+    /// are ignored by the actor during that window.
+    pub fn in_retry_pause(&self) -> bool {
+        self.state == StateKind::Failed
+            && Duration::from_millis(mono_ms().saturating_sub(self.state_since_mono_ms)) < FAILED_RETRY_INTERVAL
     }
 }

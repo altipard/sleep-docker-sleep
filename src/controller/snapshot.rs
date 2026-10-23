@@ -42,6 +42,10 @@ pub struct GroupSnapshot {
     pub state: StateKind,
     /// Wall clock (epoch ms) of the last state change.
     pub state_since_ms: u64,
+    /// Monotonic ms ([`crate::controller::mono_ms`]) of the last state change; in-process
+    /// only, used for the retry pause so a clock jump cannot extend or skip it.
+    #[serde(skip)]
+    pub state_since_mono_ms: u64,
     /// Wall clock (epoch ms) of the last request, if any.
     pub last_activity_ms: Option<u64>,
     pub inflight: u64,
@@ -56,6 +60,26 @@ pub struct GroupSnapshot {
 }
 
 impl GroupSnapshot {
+    /// An empty snapshot, only used to initialise a channel before the real one is built.
+    pub(super) fn placeholder() -> Self {
+        Self {
+            name: String::new(),
+            state: StateKind::Stopped,
+            state_since_ms: 0,
+            state_since_mono_ms: 0,
+            last_activity_ms: None,
+            inflight: 0,
+            requests_total: 0,
+            wakes_total: 0,
+            sleeps_total: 0,
+            members: Vec::new(),
+            last_error: None,
+            warnings: Vec::new(),
+            source: GroupSource::Labels,
+            settings: GroupSettings::default(),
+        }
+    }
+
     /// Milliseconds until the idle timeout stops the group, relative to `now_epoch_ms`.
     /// `None` unless the group is running.
     pub fn sleeps_in_ms(&self, now_epoch_ms: u64) -> Option<u64> {
