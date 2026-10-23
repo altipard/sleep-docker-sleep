@@ -227,7 +227,9 @@ per-project proxies, which is why `sds` stays out of the data path by default. S
 
 Early release. The state machine, discovery, API and proxy snippets are covered by tests;
 the end-to-end path (`just smoke`) runs against a real Docker daemon. Used on Linux hosts
-with systemd and on macOS with Docker Desktop. Feedback and issues are welcome.
+with systemd and on macOS with Docker Desktop. Feedback and issues are welcome; ideas
+that are already on the list, such as an instance label for shared Docker hosts and a
+consolidated overview across several hosts, are in the [Roadmap](docs/handbook/roadmap.md).
 
 ## Development
 
