@@ -10,6 +10,7 @@ labels in the Compose files form the groups.
 | `caddy-project/` | A project that ships its own Caddy container; Caddy stays awake, app and db sleep. |
 | `traefik-project/` | A project that ships its own Traefik container, configured through labels. |
 | `traefik-central/` | One central Traefik container on a shared `proxy` network, projects attach to it. |
+| `demo/` | Ten tiny services with 20-60 s idle timeouts and a random traffic script: watch groups sleep and wake in the dashboard. |
 | `native-proxy/` | No reverse proxy; `sds` owns the public port itself. Also the pattern for TCP services. |
 | `sds-as-container.compose.yaml` | Run `sds` itself as a container next to a containerised proxy. |
 
