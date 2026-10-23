@@ -4,6 +4,8 @@ FROM rust:1.90-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# The logo is compiled into the binary for the web UI.
+COPY assets/logo/sds-logo.svg ./assets/logo/
 # Version is stamped at build time; the release workflow passes the tag.
 ARG SDS_VERSION=0.0.0-dev
 RUN --mount=type=cache,target=/usr/local/cargo/registry \

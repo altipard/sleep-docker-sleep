@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>sds · overview</title>
+<link rel="icon" type="image/svg+xml" href="/logo.svg">
 <style>
   :root {
     color-scheme: light dark;
@@ -16,6 +17,7 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
   header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--border); background: var(--card); position: sticky; top: 0; }
+  header .logo { width: 32px; height: 32px; flex: none; }
   header h1 { font-size: 16px; margin: 0; font-weight: 600; }
   header h1 span { color: var(--muted); font-weight: 400; }
   header .meta { margin-left: auto; color: var(--muted); font-size: 12px; display: flex; gap: 16px; }
@@ -67,6 +69,7 @@
 </head>
 <body>
 <header>
+  <img class="logo" src="/logo.svg" alt="" width="32" height="32">
   <h1>sleep-docker-sleep <span>overview</span></h1>
   <div class="meta">
     <span id="conn"><span class="dot"></span>connecting…</span>

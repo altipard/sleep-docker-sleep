@@ -53,6 +53,7 @@ pub fn router(state: SharedState) -> Router {
 
     Router::new()
         .route("/", get(web::index))
+        .route("/logo.svg", get(web::logo))
         .route("/healthz", get(|| async { "ok" }))
         .route("/_sds/wait/{group}", get(forward_auth::wait))
         .merge(protected)
