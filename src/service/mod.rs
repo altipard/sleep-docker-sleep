@@ -67,8 +67,6 @@ User={user}
 ExecStart={binary} run --headless{config_arg}
 Restart=always
 RestartSec=2s
-# reload the configuration without restarting
-ExecReload=/bin/kill -HUP $MAINPID
 # hardening (the service only needs the Docker socket and the network)
 NoNewPrivileges=true
 ProtectSystem=strict
