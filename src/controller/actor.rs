@@ -61,7 +61,8 @@ enum Transition {
     /// All listed container ids were started and the group is healthy.
     Started(Vec<String>),
     StartFailed(String),
-    Stopped,
+    /// All listed container ids were stopped.
+    Stopped(Vec<String>),
     StopFailed(String),
 }
 
@@ -99,6 +100,16 @@ pub(super) struct GroupActor {
     wakes: u64,
     sleeps: u64,
     last_error: Option<String>,
+    /// Monotonic ms of the last failed start; the retry pause is anchored here and survives
+    /// a cleanup stop (`Failed` → `Stopping` → `Stopped`).
+    failed_at_mono_ms: Option<u64>,
+    /// Monotonic ms since the group has been "asleep but with members running" (after a
+    /// failed/partial start, an external start or a failed stop). Cleanup waits
+    /// `idle_timeout` from here, so a failing `docker stop` is retried with backoff instead
+    /// of every tick.
+    partial_since_mono_ms: Option<u64>,
+    /// After a failed `docker stop`, no automatic stop before this monotonic ms.
+    stop_backoff_until_mono_ms: Option<u64>,
     pending_wake: bool,
     transition: Option<JoinHandle<Transition>>,
 }
@@ -142,6 +153,9 @@ pub(super) fn spawn(
         wakes: 0,
         sleeps: 0,
         last_error: None,
+        failed_at_mono_ms: None,
+        partial_since_mono_ms: None,
+        stop_backoff_until_mono_ms: None,
         pending_wake: false,
         transition: None,
     };
@@ -232,13 +246,13 @@ impl GroupActor {
 
     fn on_wake(&mut self, force: bool) {
         match self.state {
-            StateKind::Stopped => self.begin_start(),
-            StateKind::Failed => {
-                let since_failure = Duration::from_millis(mono_ms().saturating_sub(self.state_since_mono_ms));
-                if force || since_failure >= FAILED_RETRY_INTERVAL {
-                    self.begin_start();
-                } else {
-                    tracing::debug!(group = %self.spec.name, "wake ignored: start failed {since_failure:?} ago");
+            StateKind::Stopped | StateKind::Failed => {
+                let since_failure = self.failed_at_mono_ms.map(|t| Duration::from_millis(mono_ms().saturating_sub(t)));
+                match since_failure {
+                    Some(ago) if !force && ago < FAILED_RETRY_INTERVAL => {
+                        tracing::debug!(group = %self.spec.name, "wake ignored: start failed {ago:?} ago");
+                    }
+                    _ => self.begin_start(),
                 }
             }
             StateKind::Stopping => self.pending_wake = true,
@@ -274,7 +288,10 @@ impl GroupActor {
                 let known = old.iter().find(|o| o.spec.id == m.id);
                 MemberStatus {
                     spec: m,
-                    running: known.is_some_and(|k| k.running),
+                    // A member we have not seen yet (container recreated by Compose) is
+                    // assumed to share the group's state until `reconcile` confirms it, so
+                    // a daemon that is unreachable right now does not flap a Running group.
+                    running: known.map_or(self.state == StateKind::Running, |k| k.running),
                     health: known.map(|k| k.health).unwrap_or_default(),
                 }
             })
@@ -309,6 +326,7 @@ impl GroupActor {
 
     fn begin_stop(&mut self, manual: bool) {
         self.sleeps += 1;
+        self.partial_since_mono_ms = None;
         let why = if manual {
             "sleep requested".to_owned()
         } else if self.state == StateKind::Running {
@@ -333,6 +351,7 @@ impl GroupActor {
                     }
                 }
                 self.last_error = None;
+                self.failed_at_mono_ms = None;
                 self.activity.mark();
                 if self.all_running() {
                     self.set_state(StateKind::Running);
@@ -345,31 +364,56 @@ impl GroupActor {
             }
             Transition::StartFailed(reason) => {
                 self.last_error = Some(reason.clone());
+                self.failed_at_mono_ms = Some(mono_ms());
                 self.set_state(StateKind::Failed);
                 self.emit(EventKind::StartFailed, format!("wake-up failed: {reason}"));
-                // Learn which members did come up; the idle check stops them again later.
-                self.reconcile().await;
+                // Learn which members did come up so the idle check can stop them later.
+                // Only the member flags: "running but never became healthy" must stay
+                // Failed, so `refresh_members` does not settle.
+                self.refresh_members().await;
+                self.partial_since_mono_ms = self.any_running().then(mono_ms);
             }
-            Transition::Stopped => {
+            Transition::Stopped(ids) => {
+                self.stop_backoff_until_mono_ms = None;
+                self.last_error = None;
                 for m in &mut self.members {
-                    m.running = false;
-                    m.health = HealthState::None;
+                    if ids.contains(&m.spec.id) {
+                        m.running = false;
+                        m.health = HealthState::None;
+                    }
                 }
                 self.set_state(StateKind::Stopped);
                 self.emit(EventKind::Stopped, "asleep");
+                if self.members.iter().any(|m| !ids.contains(&m.spec.id)) {
+                    // Members changed while stopping: look at the ones we did not touch.
+                    self.reconcile().await;
+                }
                 if self.pending_wake {
-                    self.emit(EventKind::Waking, "request arrived while stopping; waking again");
-                    self.begin_start();
+                    if self.state == StateKind::Stopped {
+                        self.emit(EventKind::Waking, "request arrived while stopping; waking again");
+                        self.begin_start();
+                    } else {
+                        self.pending_wake = false;
+                    }
                 }
             }
             Transition::StopFailed(reason) => {
                 self.last_error = Some(reason.clone());
                 self.set_state(StateKind::Stopped);
                 self.emit(EventKind::StopFailed, format!("stop failed: {reason}"));
-                // Containers are in an unknown mix; look before deciding anything.
+                // Containers are in an unknown mix; look before deciding anything. The next
+                // automatic stop waits a full idle_timeout (backoff, not a hot loop).
+                let backoff = u64::try_from(self.spec.settings.idle_timeout.as_millis()).unwrap_or(u64::MAX);
+                self.stop_backoff_until_mono_ms = Some(mono_ms().saturating_add(backoff));
                 self.reconcile().await;
+                self.partial_since_mono_ms = self.any_running().then(mono_ms);
                 if self.pending_wake {
-                    self.begin_start();
+                    // Only start if the reconcile did not already find the group running.
+                    if self.state == StateKind::Stopped {
+                        self.begin_start();
+                    } else {
+                        self.pending_wake = false;
+                    }
                 }
             }
         }
@@ -380,16 +424,29 @@ impl GroupActor {
             return;
         }
         let limit = u64::try_from(self.spec.settings.idle_timeout.as_millis()).unwrap_or(u64::MAX);
-        // Without any request yet, measure from the last state change (e.g. a group found
-        // half running at startup).
-        let idle = self.activity.idle_ms().unwrap_or_else(|| mono_ms().saturating_sub(self.state_since_mono_ms));
-        if idle < limit {
+        let now = mono_ms();
+        if self.stop_backoff_until_mono_ms.is_some_and(|until| now < until) {
             return;
         }
         match self.state {
-            StateKind::Running => self.begin_stop(false),
-            StateKind::Stopped | StateKind::Failed if self.any_running() => self.begin_stop(false),
-            StateKind::Stopped | StateKind::Failed | StateKind::Starting | StateKind::Stopping => {}
+            StateKind::Running => {
+                // Without any request yet, measure from the moment the group became running.
+                let idle = self.activity.idle_ms().unwrap_or_else(|| now.saturating_sub(self.state_since_mono_ms));
+                if idle >= limit {
+                    self.begin_stop(false);
+                }
+            }
+            // Asleep on paper, but members are running (failed/partial start, external
+            // start of one member, failed stop): clean up once this has lasted idle_timeout.
+            StateKind::Stopped | StateKind::Failed if self.any_running() => {
+                let since = *self.partial_since_mono_ms.get_or_insert(now);
+                if now.saturating_sub(since) >= limit {
+                    self.begin_stop(false);
+                }
+            }
+            StateKind::Stopped | StateKind::Failed | StateKind::Starting | StateKind::Stopping => {
+                self.partial_since_mono_ms = None;
+            }
         }
     }
 
@@ -418,6 +475,12 @@ impl GroupActor {
     /// Only `NotFound` means "not running". Any other error (daemon unreachable, timeout)
     /// keeps the previous knowledge; a Docker API blip must not put a busy group to sleep.
     async fn reconcile(&mut self) {
+        self.refresh_members().await;
+        self.settle("reconciliation");
+    }
+
+    /// The inspect half of [`reconcile`](Self::reconcile): update member flags only.
+    async fn refresh_members(&mut self) {
         let lookups = self.members.iter().map(|m| {
             let backend = Arc::clone(&self.backend);
             let id = m.spec.id.clone();
@@ -442,7 +505,6 @@ impl GroupActor {
                 }
             }
         }
-        self.settle("reconciliation");
     }
 
     /// Derive the group state from what the members do, unless a transition is in flight.
@@ -455,12 +517,17 @@ impl GroupActor {
                 self.set_state(StateKind::Stopped);
                 self.emit(EventKind::External, format!("{source}: not all containers running; group is asleep"));
             }
-            (StateKind::Stopped | StateKind::Failed | StateKind::Starting | StateKind::Stopping, true) => {
-                self.last_error = None;
+            (StateKind::Stopped | StateKind::Starting | StateKind::Stopping, true) => {
+                // `last_error` is kept: a failed stop stays visible while the group runs on.
+                self.failed_at_mono_ms = None;
+                self.partial_since_mono_ms = None;
                 self.activity.mark();
                 self.set_state(StateKind::Running);
                 self.emit(EventKind::External, format!("{source}: containers are running; group is awake"));
             }
+            // "Running" is not "healthy": a group whose start failed stays Failed until a new
+            // start attempt has probed it, however its containers look meanwhile.
+            (StateKind::Failed, true) => {}
             // A transition ended without a verdict (e.g. task failure): settle on Stopped.
             (StateKind::Starting | StateKind::Stopping, false) => self.set_state(StateKind::Stopped),
             (StateKind::Running, true) | (StateKind::Stopped | StateKind::Failed, false) => {}
@@ -493,6 +560,7 @@ impl GroupActor {
             state: self.state,
             state_since_ms: self.state_since_ms,
             state_since_mono_ms: self.state_since_mono_ms,
+            failed_at_mono_ms: self.failed_at_mono_ms,
             last_activity_ms: self.activity.last_mono_ms().map(super::time::mono_to_epoch_ms),
             inflight: self.activity.inflight(),
             requests_total: self.activity.requests_total(),
@@ -576,7 +644,11 @@ async fn stop_group(backend: Arc<dyn Backend>, members: Vec<MemberSpec>, timeout
     }))
     .await;
     let errors: Vec<String> = results.into_iter().filter_map(Result::err).collect();
-    if errors.is_empty() { Transition::Stopped } else { Transition::StopFailed(errors.join("; ")) }
+    if errors.is_empty() {
+        Transition::Stopped(members.into_iter().map(|m| m.id).collect())
+    } else {
+        Transition::StopFailed(errors.join("; "))
+    }
 }
 
 #[cfg(test)]
@@ -598,6 +670,7 @@ pub(super) mod tests {
         pub fail_start: Mutex<Option<String>>,
         /// When set, `inspect` fails with `Unreachable` (simulates a daemon hiccup).
         pub fail_inspect: Mutex<Option<String>>,
+        pub fail_stop: Mutex<Option<String>>,
         pub start_calls: Mutex<Vec<String>>,
         pub stop_calls: Mutex<Vec<String>>,
         pub events: Mutex<Option<broadcast::Sender<ContainerEvent>>>,
@@ -666,6 +739,9 @@ pub(super) mod tests {
         }
         async fn stop(&self, id: &str, _timeout: Duration) -> Result<(), BackendError> {
             self.stop_calls.lock().unwrap().push(id.to_owned());
+            if let Some(msg) = self.fail_stop.lock().unwrap().clone() {
+                return Err(BackendError::Other(msg));
+            }
             let mut c = self.containers.lock().unwrap();
             let info = c.get_mut(id).ok_or_else(|| BackendError::NotFound(id.into()))?;
             info.running = false;
@@ -911,6 +987,84 @@ pub(super) mod tests {
         .unwrap();
         assert!(backend.stop_calls.lock().unwrap().contains(&"id-app".to_string()));
         assert!(!backend.containers.lock().unwrap()["id-app"].running);
+    }
+
+    #[tokio::test]
+    async fn unhealthy_start_stays_failed_although_containers_run() {
+        // `docker start` works but the health check never passes: the containers run, the
+        // group must still be Failed and the waiter must get Failed, not Ready.
+        let backend = MockBackend::with(&["app"], false);
+        let settings = GroupSettings {
+            health: crate::config::HealthSpec::Tcp("127.0.0.1:1".into()),
+            start_timeout: Duration::from_millis(600),
+            ..fast_settings()
+        };
+        let (link, _bus, _ev) = setup(Arc::clone(&backend), spec(&["app"], settings));
+        let handle = &link.handle;
+        wait_state(handle, StateKind::Stopped).await;
+        assert!(matches!(handle.ensure_ready().await, WakeOutcome::Failed(_)));
+        let snap = handle.snapshot();
+        assert_eq!(snap.state, StateKind::Failed);
+        assert!(snap.members[0].running, "member flags are refreshed");
+        assert!(snap.last_error.is_some());
+        // Stays Failed across reconcile rounds and traffic wakes…
+        handle.request_wake();
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert_eq!(handle.snapshot().state, StateKind::Failed);
+        assert_eq!(backend.start_calls.lock().unwrap().len(), 1);
+        // …and the running-but-unhealthy member is cleaned up after idle_timeout.
+        let mut rx = handle.subscribe();
+        tokio::time::timeout(Duration::from_secs(5), rx.wait_for(|s| s.sleeps_total == 1 && !s.members[0].running))
+            .await
+            .expect("unhealthy member was not stopped")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_stop_is_retried_with_backoff_not_every_tick() {
+        let backend = MockBackend::with(&["app"], true);
+        let (link, _bus, _ev) = setup(Arc::clone(&backend), spec(&["app"], fast_settings()));
+        let handle = &link.handle;
+        wait_state(handle, StateKind::Running).await;
+        *backend.fail_stop.lock().unwrap() = Some("busy".into());
+        let mut rx = handle.subscribe();
+        // First attempt after idle fails; the group is honestly reported running again.
+        let snap = tokio::time::timeout(
+            Duration::from_secs(5),
+            rx.wait_for(|s| s.sleeps_total == 1 && s.last_error.is_some() && s.state == StateKind::Running),
+        )
+        .await
+        .expect("no failed stop attempt reported")
+        .unwrap()
+        .clone();
+        assert!(snap.last_error.as_deref().is_some_and(|e| e.contains("busy")), "{:?}", snap.last_error);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert_eq!(backend.stop_calls.lock().unwrap().len(), 1, "no hot loop");
+        assert_eq!(handle.snapshot().state, StateKind::Running);
+        *backend.fail_stop.lock().unwrap() = None;
+        tokio::time::timeout(Duration::from_secs(5), rx.wait_for(|s| s.sleeps_total == 2 && !s.members[0].running))
+            .await
+            .expect("second attempt did not happen")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn waiter_joining_a_running_start_sees_its_failure() {
+        let backend = MockBackend::with(&["app"], false);
+        let settings = GroupSettings {
+            health: crate::config::HealthSpec::Tcp("127.0.0.1:1".into()),
+            start_timeout: Duration::from_millis(800),
+            ..fast_settings()
+        };
+        let (link, _bus, _ev) = setup(Arc::clone(&backend), spec(&["app"], settings));
+        let handle = &link.handle;
+        wait_state(handle, StateKind::Stopped).await;
+        handle.request_wake();
+        wait_state(handle, StateKind::Starting).await;
+        // Joins the attempt in progress: must get Failed when it fails, not Timeout (5 s).
+        let started = Instant::now();
+        assert!(matches!(handle.ensure_ready().await, WakeOutcome::Failed(_)));
+        assert!(started.elapsed() < Duration::from_secs(3), "waiter was held until hold_timeout");
     }
 
     #[tokio::test]

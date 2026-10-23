@@ -148,12 +148,15 @@ async fn proxy_request(
     *req.uri_mut() = target;
     let is_upgrade = req.headers().contains_key(hyper::header::UPGRADE);
     strip_hop_by_hop(req.headers_mut(), is_upgrade);
+    let peer_ip = peer.ip().to_string();
     let forwarded = req
         .headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| format!("{v}, {}", peer.ip()))
-        .unwrap_or_else(|| peer.ip().to_string());
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .chain(std::iter::once(peer_ip.as_str()))
+        .collect::<Vec<&str>>()
+        .join(", ");
     if let Ok(v) = HeaderValue::from_str(&forwarded) {
         req.headers_mut().insert("x-forwarded-for", v);
     }

@@ -53,7 +53,7 @@ impl Source for LocalSource {
     }
     fn wake(&self, group: &str) {
         if let Some(h) = self.registry.get(group) {
-            h.request_wake();
+            h.force_wake();
         }
     }
     fn sleep(&self, group: &str) {

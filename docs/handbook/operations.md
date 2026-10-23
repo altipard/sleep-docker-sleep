@@ -53,7 +53,7 @@ beyond the host behind a reverse proxy with TLS.
 | `starting` | `docker start` is running or the health check is not green yet. Requests are held or see the waiting page. |
 | `running` | All members running, traffic flows. `sleeps in` shows the remaining time. |
 | `stopping` | `docker stop` is running. A request in this phase leads to a restart right afterwards. |
-| `failed` | The last start failed (reason in `notes`/`last_error`). For 10 s requests are answered with 503 immediately, then the next request triggers a new attempt; `sds wake` retries at once. Members the failed start did bring up are stopped after `idle_timeout`. |
+| `failed` | The last start failed (reason in `notes`/`last_error`). For 10 s requests are answered with 503 immediately, then the next request triggers a new attempt; `sds wake` and the dashboard retry at once. Containers that came up but never became healthy keep the group `failed` and are stopped after `idle_timeout`. |
 
 External interventions are detected: `docker compose stop` leads to `stopped`,
 `docker compose up -d` to `running` with a fresh idle timer. The event log records them as

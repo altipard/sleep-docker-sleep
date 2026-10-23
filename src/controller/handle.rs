@@ -136,7 +136,10 @@ impl GroupHandle {
         let Some(_slot) = self.activity.try_wait(before.settings.max_waiters) else {
             return WakeOutcome::Overloaded;
         };
-        self.wait_ready(before.settings.hold_timeout, before.wakes_total).await
+        // Joining an attempt already in progress: its counter increment has happened, so
+        // its failure must count as "the attempt after `before`".
+        let in_progress = u64::from(before.state == StateKind::Starting);
+        self.wait_ready(before.settings.hold_timeout, before.wakes_total.saturating_sub(in_progress)).await
     }
 
     /// Wait until the group is running or a *new* start attempt (one more than
@@ -165,7 +168,9 @@ impl GroupSnapshot {
     /// `true` while a failed start is inside [`FAILED_RETRY_INTERVAL`]; traffic-driven wakes
     /// are ignored by the actor during that window.
     pub fn in_retry_pause(&self) -> bool {
-        self.state == StateKind::Failed
-            && Duration::from_millis(mono_ms().saturating_sub(self.state_since_mono_ms)) < FAILED_RETRY_INTERVAL
+        self.state != StateKind::Running
+            && self
+                .failed_at_mono_ms
+                .is_some_and(|t| Duration::from_millis(mono_ms().saturating_sub(t)) < FAILED_RETRY_INTERVAL)
     }
 }
