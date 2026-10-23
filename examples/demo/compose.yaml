@@ -1,0 +1,151 @@
+# Ten tiny web servers, each its own sds group with a short idle timeout, so the
+# dashboard shows groups waking and sleeping within a minute instead of hours.
+#
+#   docker compose up -d        # start (or `up` to watch the container logs)
+#   sds run                     # on the host; discovers the ten groups via labels
+#   ./traffic.sh                # random requests through the sds proxies, Ctrl-C to stop
+#
+# Each service publishes its port on loopback (1810x) and gets a native sds proxy in
+# front (1820x). Requests must go through the proxy port, otherwise sds sees no activity.
+services:
+  api:  # busy service, rarely sleeps
+    image: traefik/whoami:v1.11
+    command: ["--name", "api"]
+    ports: ["127.0.0.1:18101:80"]
+    labels:
+      sds.enable: "true"
+      sds.group: "api"
+      sds.idle_timeout: "30s"
+      sds.start_grace: "1s"
+      sds.health: "http://127.0.0.1:18101/"
+      sds.proxy.listen: "127.0.0.1:18201"
+      sds.proxy.upstream: "127.0.0.1:18101"
+      sds.proxy.mode: "http"
+
+  web:  # busy service, rarely sleeps
+    image: traefik/whoami:v1.11
+    command: ["--name", "web"]
+    ports: ["127.0.0.1:18102:80"]
+    labels:
+      sds.enable: "true"
+      sds.group: "web"
+      sds.idle_timeout: "30s"
+      sds.start_grace: "1s"
+      sds.health: "http://127.0.0.1:18102/"
+      sds.proxy.listen: "127.0.0.1:18202"
+      sds.proxy.upstream: "127.0.0.1:18102"
+      sds.proxy.mode: "http"
+
+  shop:
+    image: traefik/whoami:v1.11
+    command: ["--name", "shop"]
+    ports: ["127.0.0.1:18103:80"]
+    labels:
+      sds.enable: "true"
+      sds.group: "shop"
+      sds.idle_timeout: "45s"
+      sds.start_grace: "1s"
+      sds.health: "http://127.0.0.1:18103/"
+      sds.proxy.listen: "127.0.0.1:18203"
+      sds.proxy.upstream: "127.0.0.1:18103"
+      sds.proxy.mode: "http"
+
+  blog:  # waiting page instead of holding the request
+    image: traefik/whoami:v1.11
+    command: ["--name", "blog"]
+    ports: ["127.0.0.1:18104:80"]
+    labels:
+      sds.enable: "true"
+      sds.group: "blog"
+      sds.idle_timeout: "20s"
+      sds.wake: "page"
+      sds.start_grace: "1s"
+      sds.health: "http://127.0.0.1:18104/"
+      sds.proxy.listen: "127.0.0.1:18204"
+      sds.proxy.upstream: "127.0.0.1:18104"
+      sds.proxy.mode: "http"
+
+  docs:
+    image: traefik/whoami:v1.11
+    command: ["--name", "docs"]
+    ports: ["127.0.0.1:18105:80"]
+    labels:
+      sds.enable: "true"
+      sds.group: "docs"
+      sds.idle_timeout: "40s"
+      sds.start_grace: "1s"
+      sds.health: "http://127.0.0.1:18105/"
+      sds.proxy.listen: "127.0.0.1:18205"
+      sds.proxy.upstream: "127.0.0.1:18105"
+      sds.proxy.mode: "http"
+
+  wiki:
+    image: traefik/whoami:v1.11
+    command: ["--name", "wiki"]
+    ports: ["127.0.0.1:18106:80"]
+    labels:
+      sds.enable: "true"
+      sds.group: "wiki"
+      sds.idle_timeout: "25s"
+      sds.wake: "page"
+      sds.start_grace: "1s"
+      sds.health: "http://127.0.0.1:18106/"
+      sds.proxy.listen: "127.0.0.1:18206"
+      sds.proxy.upstream: "127.0.0.1:18106"
+      sds.proxy.mode: "http"
+
+  metrics:
+    image: traefik/whoami:v1.11
+    command: ["--name", "metrics"]
+    ports: ["127.0.0.1:18107:80"]
+    labels:
+      sds.enable: "true"
+      sds.group: "metrics"
+      sds.idle_timeout: "60s"
+      sds.start_grace: "1s"
+      sds.health: "http://127.0.0.1:18107/"
+      sds.proxy.listen: "127.0.0.1:18207"
+      sds.proxy.upstream: "127.0.0.1:18107"
+      sds.proxy.mode: "http"
+
+  mail:
+    image: traefik/whoami:v1.11
+    command: ["--name", "mail"]
+    ports: ["127.0.0.1:18108:80"]
+    labels:
+      sds.enable: "true"
+      sds.group: "mail"
+      sds.idle_timeout: "20s"
+      sds.start_grace: "1s"
+      sds.health: "http://127.0.0.1:18108/"
+      sds.proxy.listen: "127.0.0.1:18208"
+      sds.proxy.upstream: "127.0.0.1:18108"
+      sds.proxy.mode: "http"
+
+  chat:
+    image: traefik/whoami:v1.11
+    command: ["--name", "chat"]
+    ports: ["127.0.0.1:18109:80"]
+    labels:
+      sds.enable: "true"
+      sds.group: "chat"
+      sds.idle_timeout: "35s"
+      sds.start_grace: "1s"
+      sds.health: "http://127.0.0.1:18109/"
+      sds.proxy.listen: "127.0.0.1:18209"
+      sds.proxy.upstream: "127.0.0.1:18109"
+      sds.proxy.mode: "http"
+
+  cdn:  # cold service, sleeps most of the time
+    image: traefik/whoami:v1.11
+    command: ["--name", "cdn"]
+    ports: ["127.0.0.1:18110:80"]
+    labels:
+      sds.enable: "true"
+      sds.group: "cdn"
+      sds.idle_timeout: "50s"
+      sds.start_grace: "1s"
+      sds.health: "http://127.0.0.1:18110/"
+      sds.proxy.listen: "127.0.0.1:18210"
+      sds.proxy.upstream: "127.0.0.1:18110"
+      sds.proxy.mode: "http"
