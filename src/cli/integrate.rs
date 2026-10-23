@@ -34,7 +34,11 @@ pub fn integrate(explicit: Option<&Path>, args: IntegrateArgs) -> Result<()> {
         format!("http://{host}:{}", bind.port())
     });
     let hold = args.hold_timeout.unwrap_or_else(|| {
-        cfg.groups.get(&args.group).and_then(|g| g.hold_timeout).unwrap_or(cfg.defaults.hold_timeout).as_secs()
+        cfg.groups
+            .get(&args.group)
+            .and_then(|g| g.overrides.hold_timeout)
+            .unwrap_or(cfg.defaults.hold_timeout)
+            .as_secs()
     });
     let input = SnippetInput {
         group: args.group,

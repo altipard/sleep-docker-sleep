@@ -34,7 +34,7 @@ cope with a database that is not ready yet need a restart policy
 |---|---|---|
 | `sds.enable` | `true`/`false` | The container becomes a member of its group. Without this label `sds` ignores the container. |
 | `sds.keep_awake` | `true` | The container is never stopped by `sds`. Documents intent, e.g. on the project's own proxy. |
-| `sds.group` | name | Explicit group instead of the Compose project. |
+| `sds.group` | name | Explicit group instead of the Compose project. No whitespace or `/` (the name is part of `/_sds/check/<name>`). |
 | `sds.idle_timeout` | duration | See [Configuration](configuration.md#defaults-and-group-settings). |
 | `sds.start_timeout` | duration | |
 | `sds.stop_timeout` | duration | |
@@ -49,6 +49,14 @@ cope with a database that is not ready yet need a restart policy
 
 Unknown `sds.*` labels are errors: the container is ignored and `sds check` names the
 label. This prevents a typo like `sds.idle_timout` from silently activating the default.
+The same applies to values that would break at runtime (`sds.idle_timeout=0s`,
+`sds.max_waiters=0`). A container that carries `sds.*` labels but no `sds.enable=true`
+is ignored with a warning; `sds.enable=false` silences it.
+
+A container belongs to exactly one group. If it is both listed in a `[groups.<name>]`
+entry and labelled for another group, it stays with the alphabetically first group and
+`sds check` warns. A container with `sds.keep_awake=true` is never managed, also when a
+`[groups.<name>]` entry lists it.
 
 Group-wide settings (`idle_timeout`, `health`, …) sensibly live on one container. If they
 are on several and contradict each other, the alphabetically first container name wins;

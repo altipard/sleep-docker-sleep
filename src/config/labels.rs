@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use super::settings::{GroupSettings, HealthSpec, ProxyMode, ProxySettings, WakeMode};
+use super::settings::{GroupSettings, HealthSpec, ProxyMode, ProxySettings, SettingsOverlay, WakeMode};
 
 pub const COMPOSE_PROJECT: &str = "com.docker.compose.project";
 pub const COMPOSE_SERVICE: &str = "com.docker.compose.service";
@@ -39,26 +39,23 @@ pub enum LabelError {
 /// Everything `sds` reads from one container's labels.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedLabels {
-    pub enable: bool,
+    /// `sds.enable` as written; `None` when the label is absent.
+    pub enable: Option<bool>,
     pub keep_awake: bool,
     pub group: Option<String>,
     pub compose_project: Option<String>,
     pub compose_service: Option<String>,
-    pub idle_timeout: Option<Duration>,
-    pub start_timeout: Option<Duration>,
-    pub stop_timeout: Option<Duration>,
-    pub start_grace: Option<Duration>,
-    pub health: Option<HealthSpec>,
-    pub wake: Option<WakeMode>,
-    pub hold_timeout: Option<Duration>,
-    pub max_waiters: Option<usize>,
-    pub proxy: Option<ProxySettings>,
+    pub overrides: SettingsOverlay,
 }
 
 impl ParsedLabels {
     /// `true` when the container carries any `sds.*` label at all.
     pub fn mentions_sds(labels: &HashMap<String, String>) -> bool {
         labels.keys().any(|k| k.starts_with(crate::LABEL_PREFIX))
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enable == Some(true)
     }
 
     /// The group this container belongs to: explicit `sds.group`, else the compose
@@ -69,33 +66,7 @@ impl ParsedLabels {
 
     /// Overlay the label values onto `base` (labels win).
     pub fn apply_to(&self, base: &mut GroupSettings) {
-        if let Some(v) = self.idle_timeout {
-            base.idle_timeout = v;
-        }
-        if let Some(v) = self.start_timeout {
-            base.start_timeout = v;
-        }
-        if let Some(v) = self.stop_timeout {
-            base.stop_timeout = v;
-        }
-        if let Some(v) = self.start_grace {
-            base.start_grace = v;
-        }
-        if let Some(v) = &self.health {
-            base.health = v.clone();
-        }
-        if let Some(v) = self.wake {
-            base.wake = v;
-        }
-        if let Some(v) = self.hold_timeout {
-            base.hold_timeout = v;
-        }
-        if let Some(v) = self.max_waiters {
-            base.max_waiters = v;
-        }
-        if let Some(v) = &self.proxy {
-            base.proxy = Some(v.clone());
-        }
+        self.overrides.apply_to(base);
     }
 }
 
@@ -166,12 +137,12 @@ pub fn parse_labels(labels: &HashMap<String, String>) -> Result<ParsedLabels, La
         .map(|v| v.trim().parse::<usize>().map_err(|e| invalid("sds.max_waiters", e.to_string())))
         .transpose()?;
 
-    Ok(ParsedLabels {
-        enable: parse_bool(labels, "sds.enable")?.unwrap_or(false),
-        keep_awake: parse_bool(labels, "sds.keep_awake")?.unwrap_or(false),
-        group: labels.get("sds.group").map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()),
-        compose_project: labels.get(COMPOSE_PROJECT).cloned(),
-        compose_service: labels.get(COMPOSE_SERVICE).cloned(),
+    let group = labels.get("sds.group").map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    if let Some(g) = &group {
+        super::file::validate_group_name(g).map_err(|e| invalid("sds.group", e))?;
+    }
+
+    let overrides = SettingsOverlay {
         idle_timeout: parse_duration(labels, "sds.idle_timeout")?,
         start_timeout: parse_duration(labels, "sds.start_timeout")?,
         stop_timeout: parse_duration(labels, "sds.stop_timeout")?,
@@ -181,6 +152,21 @@ pub fn parse_labels(labels: &HashMap<String, String>) -> Result<ParsedLabels, La
         hold_timeout: parse_duration(labels, "sds.hold_timeout")?,
         max_waiters,
         proxy,
+    };
+    // Values that break at runtime (zero timeouts, max_waiters = 0) are label errors, so the
+    // container is reported instead of behaving strangely.
+    overrides
+        .applied_to(&GroupSettings::default())
+        .validate()
+        .map_err(|e| LabelError::Invalid { label: format!("sds.{}", e.split(' ').next().unwrap_or("?")), reason: e })?;
+
+    Ok(ParsedLabels {
+        enable: parse_bool(labels, "sds.enable")?,
+        keep_awake: parse_bool(labels, "sds.keep_awake")?.unwrap_or(false),
+        group,
+        compose_project: labels.get(COMPOSE_PROJECT).cloned(),
+        compose_service: labels.get(COMPOSE_SERVICE).cloned(),
+        overrides,
     })
 }
 
@@ -206,11 +192,11 @@ mod tests {
             (COMPOSE_PROJECT, "shop-prod"),
         ]))
         .unwrap();
-        assert!(parsed.enable);
+        assert!(parsed.enabled());
         assert_eq!(parsed.group.as_deref(), Some("shop"));
-        assert_eq!(parsed.idle_timeout, Some(Duration::from_secs(1800)));
-        assert_eq!(parsed.wake, Some(WakeMode::Page));
-        let proxy = parsed.proxy.unwrap();
+        assert_eq!(parsed.overrides.idle_timeout, Some(Duration::from_secs(1800)));
+        assert_eq!(parsed.overrides.wake, Some(WakeMode::Page));
+        let proxy = parsed.overrides.proxy.unwrap();
         assert_eq!(proxy.mode, ProxyMode::Tcp);
         assert_eq!(proxy.upstream, "127.0.0.1:18080");
     }
@@ -232,6 +218,22 @@ mod tests {
         assert!(parse_labels(&labels(&[("sds.enable", "maybe")])).is_err());
         assert!(parse_labels(&labels(&[("sds.idle_timeout", "soon")])).is_err());
         assert_eq!(parse_labels(&labels(&[("sds.proxy.listen", "0.0.0.0:80")])), Err(LabelError::IncompleteProxy));
+    }
+
+    #[test]
+    fn rejects_values_that_break_at_runtime() {
+        let err = parse_labels(&labels(&[("sds.idle_timeout", "0s")])).unwrap_err();
+        assert!(err.to_string().contains("idle_timeout"), "{err}");
+        assert!(parse_labels(&labels(&[("sds.max_waiters", "0")])).is_err());
+        let err = parse_labels(&labels(&[("sds.group", "a/b")])).unwrap_err();
+        assert!(err.to_string().contains("sds.group"), "{err}");
+        assert!(parse_labels(&labels(&[("sds.group", "has space")])).is_err());
+    }
+
+    #[test]
+    fn enable_distinguishes_absent_from_false() {
+        assert_eq!(parse_labels(&labels(&[("sds.idle_timeout", "5m")])).unwrap().enable, None);
+        assert_eq!(parse_labels(&labels(&[("sds.enable", "false")])).unwrap().enable, Some(false));
     }
 
     #[test]

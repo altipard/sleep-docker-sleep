@@ -187,6 +187,93 @@ impl Default for GroupSettings {
     }
 }
 
+impl GroupSettings {
+    /// Reject values that would make a group unusable at runtime: a zero `idle_timeout`
+    /// stops the group right after every wake, a zero `start_timeout` fails every wake, a
+    /// zero `hold_timeout` or `max_waiters` turns every held request into an error.
+    /// `stop_timeout` and `start_grace` may be zero (immediate kill, no grace).
+    pub fn validate(&self) -> Result<(), String> {
+        if self.idle_timeout.is_zero() {
+            return Err("idle_timeout must be > 0".into());
+        }
+        if self.start_timeout.is_zero() {
+            return Err("start_timeout must be > 0".into());
+        }
+        if self.hold_timeout.is_zero() {
+            return Err("hold_timeout must be > 0".into());
+        }
+        if self.max_waiters == 0 {
+            return Err("max_waiters must be > 0".into());
+        }
+        Ok(())
+    }
+}
+
+/// Partial settings from one source (a `[groups.<name>]` table or one container's labels).
+/// `None` means "inherit". The single place where "which fields can be overridden" lives.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SettingsOverlay {
+    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
+    pub idle_timeout: Option<Duration>,
+    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
+    pub start_timeout: Option<Duration>,
+    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
+    pub stop_timeout: Option<Duration>,
+    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
+    pub start_grace: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<HealthSpec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wake: Option<WakeMode>,
+    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
+    pub hold_timeout: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_waiters: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<ProxySettings>,
+}
+
+impl SettingsOverlay {
+    /// Overlay the set values onto `base`.
+    pub fn apply_to(&self, base: &mut GroupSettings) {
+        if let Some(v) = self.idle_timeout {
+            base.idle_timeout = v;
+        }
+        if let Some(v) = self.start_timeout {
+            base.start_timeout = v;
+        }
+        if let Some(v) = self.stop_timeout {
+            base.stop_timeout = v;
+        }
+        if let Some(v) = self.start_grace {
+            base.start_grace = v;
+        }
+        if let Some(v) = &self.health {
+            base.health = v.clone();
+        }
+        if let Some(v) = self.wake {
+            base.wake = v;
+        }
+        if let Some(v) = self.hold_timeout {
+            base.hold_timeout = v;
+        }
+        if let Some(v) = self.max_waiters {
+            base.max_waiters = v;
+        }
+        if let Some(v) = &self.proxy {
+            base.proxy = Some(v.clone());
+        }
+    }
+
+    /// `base` with this overlay applied.
+    pub fn applied_to(&self, base: &GroupSettings) -> GroupSettings {
+        let mut s = base.clone();
+        self.apply_to(&mut s);
+        s
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +298,19 @@ mod tests {
         let back: HealthSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(back, HealthSpec::Tcp("db:5432".into()));
         assert!(serde_json::from_str::<HealthSpec>("\"ftp://x\"").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_runtime_values() {
+        assert!(GroupSettings::default().validate().is_ok());
+        let zero = GroupSettings { idle_timeout: Duration::ZERO, ..GroupSettings::default() };
+        assert!(zero.validate().is_err());
+        let zero = GroupSettings { max_waiters: 0, ..GroupSettings::default() };
+        assert!(zero.validate().is_err());
+        // Immediate kill and no grace period are legitimate.
+        let ok =
+            GroupSettings { stop_timeout: Duration::ZERO, start_grace: Duration::ZERO, ..GroupSettings::default() };
+        assert!(ok.validate().is_ok());
     }
 
     #[test]
