@@ -58,6 +58,9 @@ pub fn discover(containers: &[ContainerInfo], config: &Config) -> Discovery {
         let mut group_warnings = Vec::new();
         for wanted in &static_group.containers {
             match containers.iter().find(|c| &c.name == wanted) {
+                Some(c) if parse_labels(&c.labels).is_ok_and(|p| p.keep_awake) => {
+                    group_warnings.push(format!("container `{wanted}` has sds.keep_awake=true and is not managed"));
+                }
                 Some(c) => members.push(MemberSpec {
                     id: c.id.clone(),
                     name: c.name.clone(),
@@ -93,7 +96,13 @@ pub fn discover(containers: &[ContainerInfo], config: &Config) -> Discovery {
                 continue;
             }
         };
-        if parsed.keep_awake || !parsed.enable {
+        if parsed.keep_awake {
+            continue;
+        }
+        if !parsed.enabled() {
+            if parsed.enable.is_none() {
+                warnings.push(format!("container `{}` has sds.* labels but no sds.enable=true; ignored", c.name));
+            }
             continue;
         }
         let group_name = parsed.group_name(&c.name);
@@ -131,6 +140,25 @@ pub fn discover(containers: &[ContainerInfo], config: &Config) -> Discovery {
     }
 
     let mut groups: Vec<GroupSpec> = groups.into_values().collect();
+    // A container in two groups would be fought over by two actors: it stays with the
+    // first group (by name) and the others are told.
+    let mut owner: BTreeMap<String, String> = BTreeMap::new();
+    for g in &mut groups {
+        let name = g.name.clone();
+        g.members.retain(|m| match owner.get(&m.id) {
+            Some(first) => {
+                warnings.push(format!(
+                    "container `{}` is listed in groups `{first}` and `{name}`; it belongs to `{first}`",
+                    m.name
+                ));
+                false
+            }
+            None => {
+                owner.insert(m.id.clone(), name.clone());
+                true
+            }
+        });
+    }
     for g in &mut groups {
         g.members.sort_by(|a, b| a.name.cmp(&b.name));
         if g.members.is_empty() {
@@ -196,6 +224,34 @@ mod tests {
         assert_eq!(d.groups[0].warnings.len(), 1);
         assert_eq!(d.warnings.len(), 1);
         assert!(d.warnings[0].contains("`c`"));
+    }
+
+    #[test]
+    fn a_container_belongs_to_one_group_only() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [groups.legacy]
+            containers = ["shared"]
+            "#,
+        )
+        .unwrap();
+        let d = discover(&[container("shared", &[("sds.enable", "true"), ("sds.group", "new")])], &cfg);
+        assert_eq!(d.group("legacy").unwrap().members.len(), 1);
+        assert!(d.group("new").unwrap().members.is_empty());
+        assert!(d.warnings.iter().any(|w| w.contains("`legacy`") && w.contains("`new`")), "{:?}", d.warnings);
+    }
+
+    #[test]
+    fn keep_awake_protects_static_members_and_missing_enable_warns() {
+        let cfg: Config = toml::from_str("[groups.g]\ncontainers = [\"proxy\", \"app\"]").unwrap();
+        let d = discover(
+            &[container("proxy", &[("sds.keep_awake", "true")]), container("app", &[("sds.idle_timeout", "1m")])],
+            &cfg,
+        );
+        let g = d.group("g").unwrap();
+        assert_eq!(g.members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["app"]);
+        assert!(g.warnings.iter().any(|w| w.contains("keep_awake")));
+        assert!(d.warnings.iter().any(|w| w.contains("`app`") && w.contains("sds.enable")), "{:?}", d.warnings);
     }
 
     #[test]

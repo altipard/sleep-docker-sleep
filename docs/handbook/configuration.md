@@ -34,8 +34,9 @@ container wins; `sds check` and the web overview show a warning.
 ```toml
 [admin]
 bind = "127.0.0.1:9900"      # admin API, forward-auth endpoint and web overview
-# token = "…"                 # required as soon as bind is not loopback
+# token = "…"                 # required as soon as bind is not loopback (sds warns otherwise)
 # public_url = "https://…"    # only if the waiting page is served from another origin
+# unknown_group = "allow"     # what /_sds/check answers for unknown groups: allow | deny
 
 [docker]
 # host = "unix:///var/run/docker.sock"   # or tcp://…; default: DOCKER_HOST or the socket
@@ -99,13 +100,17 @@ value. With `json = true` the output suits Loki, Elastic or journald parsers.
 | Field | Meaning and notes |
 |---|---|
 | `idle_timeout` | Time since the last request after which the group is stopped. With the native proxy, open connections count as activity; with forward-auth only the requests themselves (plan long downloads with some margin). |
-| `start_timeout` | Upper bound for start plus health check. After that the group is `failed`; the next request after 10 s triggers a new attempt. |
+| `start_timeout` | Upper bound for start plus health check. After that the group is `failed`; requests during the next 10 s are answered immediately, the first one after that triggers a new attempt (`sds wake` does so at once). |
 | `stop_timeout` | Passed to `docker stop`. Databases often need more than the Compose default of 10 s. |
 | `start_grace` | Wait time when no other health check applies. |
 | `health` | `docker`: the container's HEALTHCHECK (all members with a HEALTHCHECK must be `healthy`; if none has one, `start_grace` applies). `http://…`: GET until 2xx/3xx. `tcp://host:port`: connection attempt. `grace`: just wait. Addresses are as seen from the `sds` process. |
 | `wake` | `hold`: the request is held until ready, the client only notices a delay. `page`: immediate waiting page with automatic reload (for browser applications with long start times). |
 | `hold_timeout` | After this time a held request receives a 503 with the waiting page. Must be smaller than the reverse proxy's timeouts (the snippets set those accordingly). |
 | `max_waiters` | Protection against load spikes while waking: more simultaneously waiting requests are answered with 503 immediately. |
+
+`idle_timeout`, `start_timeout`, `hold_timeout` and `max_waiters` must be greater than
+zero; `sds` refuses the file (or ignores the labelled container with a warning) otherwise.
+`stop_timeout = "0s"` (immediate kill) and `start_grace = "0s"` are allowed.
 
 ### `[groups.<name>]`
 

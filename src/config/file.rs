@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::settings::{GroupSettings, HealthSpec, ProxySettings, WakeMode};
+use super::settings::{GroupSettings, SettingsOverlay};
 
 pub const FILE_NAME: &str = "sds.toml";
 pub const ENV_VAR: &str = "SDS_CONFIG";
@@ -38,12 +38,31 @@ pub struct AdminConfig {
     /// reverse proxy cannot serve `/_sds/wait/*` from the same origin.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_url: Option<String>,
+    /// What `/_sds/check/{group}` answers for a group `sds` does not know.
+    pub unknown_group: UnknownGroupPolicy,
 }
 
 impl Default for AdminConfig {
     fn default() -> Self {
-        Self { bind: "127.0.0.1:9900".parse().unwrap_or_else(|_| unreachable!()), token: None, public_url: None }
+        Self {
+            bind: SocketAddr::from(([127, 0, 0, 1], 9900)),
+            token: None,
+            public_url: None,
+            unknown_group: UnknownGroupPolicy::Allow,
+        }
     }
+}
+
+/// Forward-auth behaviour for unknown groups. `sds` gates wake-ups, it is not an
+/// authorization layer; `allow` keeps a typo in the proxy config from taking a site down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum UnknownGroupPolicy {
+    /// Answer 200 with `X-SDS-State: unknown-group` and log a warning.
+    #[default]
+    Allow,
+    /// Answer with the `deny` status and a "unknown service" page.
+    Deny,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -84,63 +103,33 @@ impl Default for LogConfig {
 }
 
 /// A group defined in the file instead of via labels. Every field except `containers`
-/// overrides `[defaults]`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+/// overrides `[defaults]` (see [`SettingsOverlay`]).
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct StaticGroup {
     /// Container names (as shown by `docker ps`).
     pub containers: Vec<String>,
-    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
-    pub idle_timeout: Option<Duration>,
-    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
-    pub start_timeout: Option<Duration>,
-    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
-    pub stop_timeout: Option<Duration>,
-    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
-    pub start_grace: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub health: Option<HealthSpec>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wake: Option<WakeMode>,
-    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
-    pub hold_timeout: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_waiters: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub proxy: Option<ProxySettings>,
+    #[serde(flatten)]
+    pub overrides: SettingsOverlay,
+}
+
+/// Hand-written because serde cannot combine `flatten` with `deny_unknown_fields`: the
+/// table is split into `containers` and the rest, and the rest must be a valid overlay, so
+/// a typo such as `idle_timeoutt` is still an error.
+impl<'de> Deserialize<'de> for StaticGroup {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut table = toml::Table::deserialize(deserializer)?;
+        let containers = match table.remove("containers") {
+            Some(v) => v.try_into::<Vec<String>>().map_err(|e| serde::de::Error::custom(format!("containers: {e}")))?,
+            None => Vec::new(),
+        };
+        let overrides: SettingsOverlay = toml::Value::Table(table).try_into().map_err(serde::de::Error::custom)?;
+        Ok(Self { containers, overrides })
+    }
 }
 
 impl StaticGroup {
     pub fn settings(&self, defaults: &GroupSettings) -> GroupSettings {
-        let mut s = defaults.clone();
-        if let Some(v) = self.idle_timeout {
-            s.idle_timeout = v;
-        }
-        if let Some(v) = self.start_timeout {
-            s.start_timeout = v;
-        }
-        if let Some(v) = self.stop_timeout {
-            s.stop_timeout = v;
-        }
-        if let Some(v) = self.start_grace {
-            s.start_grace = v;
-        }
-        if let Some(v) = &self.health {
-            s.health = v.clone();
-        }
-        if let Some(v) = self.wake {
-            s.wake = v;
-        }
-        if let Some(v) = self.hold_timeout {
-            s.hold_timeout = v;
-        }
-        if let Some(v) = self.max_waiters {
-            s.max_waiters = v;
-        }
-        if let Some(v) = &self.proxy {
-            s.proxy = Some(v.clone());
-        }
-        s
+        self.overrides.applied_to(defaults)
     }
 }
 
@@ -209,17 +198,29 @@ fn parse_file(path: &Path) -> Result<Config> {
     Ok(cfg)
 }
 
+/// Group names appear in URL paths (`/_sds/check/{group}`) and log lines.
+pub fn validate_group_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("group name must not be empty".into());
+    }
+    if name.contains('/') || name.contains(char::is_whitespace) {
+        return Err(format!("group `{name}`: name must not contain `/` or whitespace"));
+    }
+    Ok(())
+}
+
 impl Config {
     pub fn validate(&self) -> Result<()> {
-        for (name, group) in &self.groups {
-            anyhow::ensure!(!name.is_empty(), "group name must not be empty");
-            anyhow::ensure!(
-                !name.contains('/') && !name.contains(char::is_whitespace),
-                "group `{name}`: name must not contain `/` or whitespace"
-            );
-            anyhow::ensure!(!group.containers.is_empty(), "group `{name}`: `containers` must not be empty");
+        anyhow::ensure!(!self.discovery.interval.is_zero(), "discovery.interval must be > 0");
+        if let Some(token) = &self.admin.token {
+            anyhow::ensure!(!token.trim().is_empty(), "admin.token must not be empty (remove it to disable auth)");
         }
-        anyhow::ensure!(self.defaults.max_waiters > 0, "defaults.max_waiters must be > 0");
+        self.defaults.validate().map_err(|e| anyhow::anyhow!("defaults: {e}"))?;
+        for (name, group) in &self.groups {
+            validate_group_name(name).map_err(anyhow::Error::msg)?;
+            anyhow::ensure!(!group.containers.is_empty(), "group `{name}`: `containers` must not be empty");
+            group.settings(&self.defaults).validate().map_err(|e| anyhow::anyhow!("group `{name}`: {e}"))?;
+        }
         Ok(())
     }
 
@@ -238,6 +239,8 @@ const EXAMPLE: &str = r#"# sleep-docker-sleep (sds) configuration
 bind = "127.0.0.1:9900"
 # token = "change-me"
 # public_url = "https://sds.example.internal"
+# What /_sds/check answers for a group sds does not know: allow (default) or deny.
+# unknown_group = "allow"
 
 [docker]
 # host = "unix:///var/run/docker.sock"
@@ -304,15 +307,29 @@ mod tests {
         cfg.validate().unwrap();
         let s = cfg.groups["shop"].settings(&cfg.defaults);
         assert_eq!(s.idle_timeout, Duration::from_secs(3600));
-        assert_eq!(s.health, HealthSpec::Tcp("127.0.0.1:5432".into()));
+        assert_eq!(s.health, super::super::HealthSpec::Tcp("127.0.0.1:5432".into()));
         assert_eq!(s.proxy.unwrap().mode, super::super::ProxyMode::Http);
     }
 
     #[test]
     fn rejects_unknown_keys_and_empty_groups() {
         assert!(toml::from_str::<Config>("[admin]\nbindd = \"x\"").is_err());
+        // Unknown keys inside a static group are caught through the flattened overlay.
+        assert!(toml::from_str::<Config>("[groups.g]\ncontainers = [\"a\"]\nidle_timeoutt = \"1m\"").is_err());
         let cfg: Config = toml::from_str("[groups.empty]\ncontainers = []").unwrap();
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_values_that_break_at_runtime() {
+        let zero_interval: Config = toml::from_str("[discovery]\ninterval = \"0s\"").unwrap();
+        assert!(zero_interval.validate().unwrap_err().to_string().contains("discovery.interval"));
+        let zero_idle: Config = toml::from_str("[groups.g]\ncontainers = [\"a\"]\nidle_timeout = \"0s\"").unwrap();
+        assert!(zero_idle.validate().unwrap_err().to_string().contains("idle_timeout"));
+        let bad_name: Config = toml::from_str("[groups.\"a/b\"]\ncontainers = [\"a\"]").unwrap();
+        assert!(bad_name.validate().is_err());
+        let empty_token: Config = toml::from_str("[admin]\ntoken = \"\"").unwrap();
+        assert!(empty_token.validate().is_err());
     }
 
     #[test]
