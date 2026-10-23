@@ -29,8 +29,10 @@ jobs:
           python-version: "3.12"
       - run: pip install --quiet commitizen
       - id: next
+        # --yes answers the "first tag?" prompt on a repo without tags. commitizen prints
+        # that warning to stdout, so only a line that looks like a version is accepted.
         run: |
-          VERSION=$(cz bump --get-next 2>/dev/null || true)
+          VERSION=$(cz bump --get-next --yes 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | tail -n1 || true)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "next version: ${VERSION:-none (no release-relevant commits)}"
 
