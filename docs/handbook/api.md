@@ -91,6 +91,16 @@ curl -s http://127.0.0.1:9900/api/v1/status | jq -r '.groups[] | select(.state==
 # wake a group and wait (an operator wake: it also retries right after a failed start)
 curl -s -X POST 'http://127.0.0.1:9900/api/v1/groups/shop/wake?wait=true' | jq .result
 
+# keep a group stopped for maintenance, then hand it back to traffic
+curl -s -X POST http://127.0.0.1:9900/api/v1/groups/shop/hold
+curl -s -X POST http://127.0.0.1:9900/api/v1/groups/shop/release
+
+# with admin.token set
+curl -s -H "X-SDS-Token: $SDS_TOKEN" http://127.0.0.1:9900/api/v1/status
+
 # live events
 curl -N http://127.0.0.1:9900/api/v1/events
+
+# the specification, e.g. for a client generator
+curl -s http://127.0.0.1:9900/openapi.json
 ```
