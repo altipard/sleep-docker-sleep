@@ -37,6 +37,7 @@
   .badge.running { background: var(--ok); }
   .badge.starting, .badge.stopping { background: var(--warn); }
   .badge.failed { background: var(--bad); }
+  .badge.held { background: transparent; color: var(--warn); border: 1px solid var(--warn); margin-left: 4px; }
   .name { font-weight: 600; }
   .sub { color: var(--muted); font-size: 12px; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
@@ -148,13 +149,14 @@
       const err = g.last_error ? '<div class="sub bad">' + esc(g.last_error) + '</div>' : '';
       const row = '<tr class="group" data-g="' + esc(g.name) + '">' +
         '<td><div class="name">' + esc(g.name) + '</div><div class="sub">' + esc(g.source) + ' · idle ' + esc(g.settings.idle_timeout) + ' · ' + esc(g.settings.wake) + '</div>' + warn + err + '</td>' +
-        '<td><span class="badge ' + esc(g.state) + '">' + esc(g.state) + '</span><div class="sub">since ' + fmtTime(g.state_since_ms) + '</div></td>' +
+        '<td><span class="badge ' + esc(g.state) + '">' + esc(g.state) + '</span>' + (g.held ? '<span class="badge held" title="traffic does not wake this group until it is released">held</span>' : '') + '<div class="sub">since ' + fmtTime(g.state_since_ms) + '</div></td>' +
         '<td><ul class="members">' + members + '</ul></td>' +
         '<td class="num">' + g.requests_total + (g.inflight ? '<div class="sub">' + g.inflight + ' open</div>' : '') + '</td>' +
         '<td>' + fmtAge(g.last_activity_ms, now) + '</td>' +
         '<td>' + (left == null ? '—' : fmtDur(left)) + '</td>' +
-        '<td class="actions"><button data-act="wake" data-g="' + esc(g.name) + '" ' + (g.state === 'running' || g.state === 'starting' ? 'disabled' : '') + '>Wake</button> ' +
-        '<button data-act="sleep" data-g="' + esc(g.name) + '" ' + (g.state !== 'running' ? 'disabled' : '') + '>Sleep</button></td></tr>';
+        '<td class="actions"><button data-act="wake" data-g="' + esc(g.name) + '" ' + (g.held || g.state === 'running' || g.state === 'starting' ? 'disabled' : '') + '>Wake</button> ' +
+        '<button data-act="sleep" data-g="' + esc(g.name) + '" ' + (g.state !== 'running' ? 'disabled' : '') + '>Sleep</button> ' +
+        '<button data-act="' + (g.held ? 'release' : 'hold') + '" data-g="' + esc(g.name) + '">' + (g.held ? 'Release' : 'Hold') + '</button></td></tr>';
       if (!open.has(g.name)) return row;
       const s = g.settings;
       const details = '<tr class="details"><td colspan="7"><dl>' +

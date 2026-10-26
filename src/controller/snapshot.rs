@@ -40,6 +40,9 @@ pub struct MemberSnapshot {
 pub struct GroupSnapshot {
     pub name: String,
     pub state: StateKind,
+    /// On hold: traffic and operator wakes do not start the group until it is released.
+    #[serde(default)]
+    pub held: bool,
     /// Wall clock (epoch ms) of the last state change.
     pub state_since_ms: u64,
     /// Monotonic ms ([`crate::controller::mono_ms`]) of the last state change; in-process
@@ -69,6 +72,7 @@ impl GroupSnapshot {
         Self {
             name: String::new(),
             state: StateKind::Stopped,
+            held: false,
             state_since_ms: 0,
             state_since_mono_ms: 0,
             failed_at_mono_ms: None,

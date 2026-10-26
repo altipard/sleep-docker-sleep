@@ -99,6 +99,12 @@ impl OutcomeText {
                 5,
             ),
             WakeOutcome::Gone => ("Service removed", "The service disappeared while waiting.".to_owned(), "gone", 10),
+            WakeOutcome::Held => (
+                "On hold",
+                "The service has been stopped by an operator and is not started until it is released.".to_owned(),
+                "held",
+                30,
+            ),
         };
         Self { title, message, state, retry_secs }
     }

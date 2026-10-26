@@ -14,6 +14,8 @@ pub enum EventKind {
     Stopped,
     StopFailed,
     External,
+    Held,
+    Released,
     Warning,
 }
 

@@ -24,6 +24,8 @@ pub enum WakeOutcome {
     Overloaded,
     /// The group disappeared while waiting.
     Gone,
+    /// The group is on hold: it is not started until released.
+    Held,
 }
 
 /// Cheap, cloneable access to one group for request handlers, the API and the UI.
@@ -92,6 +94,16 @@ impl GroupHandle {
         self.signals.request_sleep();
     }
 
+    /// Stop the group and ignore every wake until [`release`](Self::release).
+    pub fn hold(&self) {
+        self.signals.set_hold(true);
+    }
+
+    /// Lift a hold; the group stays asleep until the next request or operator wake.
+    pub fn release(&self) {
+        self.signals.set_hold(false);
+    }
+
     /// Record activity and make sure the group is (or becomes) running, using the group's
     /// own `wake` setting.
     pub async fn ensure_ready(&self) -> WakeOutcome {
@@ -110,6 +122,9 @@ impl GroupHandle {
         if before.state == StateKind::Running {
             return WakeOutcome::Ready;
         }
+        if before.held {
+            return WakeOutcome::Held;
+        }
         if before.in_retry_pause() {
             // The actor would ignore the wake anyway; answer without holding the request.
             return WakeOutcome::Failed(before.last_error.clone().unwrap_or_else(|| "start failed".into()));
@@ -118,7 +133,7 @@ impl GroupHandle {
         if mode.unwrap_or(before.settings.wake) == WakeMode::Page {
             return WakeOutcome::Starting;
         }
-        self.hold(&before).await
+        self.wait_for_start(&before).await
     }
 
     /// Operator wake that blocks until the group is ready (`POST …/wake?wait=true`).
@@ -127,12 +142,15 @@ impl GroupHandle {
         if before.state == StateKind::Running {
             return WakeOutcome::Ready;
         }
+        if before.held {
+            return WakeOutcome::Held;
+        }
         self.force_wake();
-        self.hold(&before).await
+        self.wait_for_start(&before).await
     }
 
     /// Take a waiter slot and wait for the start triggered after `before` was taken.
-    async fn hold(&self, before: &GroupSnapshot) -> WakeOutcome {
+    async fn wait_for_start(&self, before: &GroupSnapshot) -> WakeOutcome {
         let Some(_slot) = self.activity.try_wait(before.settings.max_waiters) else {
             return WakeOutcome::Overloaded;
         };
@@ -142,20 +160,23 @@ impl GroupHandle {
         self.wait_ready(before.settings.hold_timeout, before.wakes_total.saturating_sub(in_progress)).await
     }
 
-    /// Wait until the group is running or a *new* start attempt (one more than
-    /// `wakes_before`) has failed.
+    /// Wait until the group is running, a *new* start attempt (one more than
+    /// `wakes_before`) has failed, or the group was put on hold meanwhile.
     pub async fn wait_ready(&self, timeout: Duration, wakes_before: u64) -> WakeOutcome {
         let mut rx = self.state.clone();
         let waited = tokio::time::timeout(
             timeout,
             rx.wait_for(|s| {
-                s.state == StateKind::Running || (s.state == StateKind::Failed && s.wakes_total > wakes_before)
+                s.state == StateKind::Running
+                    || s.held
+                    || (s.state == StateKind::Failed && s.wakes_total > wakes_before)
             }),
         )
         .await;
         match waited {
             Ok(Ok(snap)) => match snap.state {
                 StateKind::Running => WakeOutcome::Ready,
+                _ if snap.held => WakeOutcome::Held,
                 _ => WakeOutcome::Failed(snap.last_error.clone().unwrap_or_else(|| "start failed".into())),
             },
             Ok(Err(_)) => WakeOutcome::Gone,

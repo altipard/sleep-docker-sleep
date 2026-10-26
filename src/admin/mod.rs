@@ -17,6 +17,8 @@
 //! | GET    | `/api/v1/groups/{group}`      | one group                                 |
 //! | POST   | `/api/v1/groups/{group}/wake` | start now (`?wait=true` blocks until ready)|
 //! | POST   | `/api/v1/groups/{group}/sleep`| stop now                                  |
+//! | POST   | `/api/v1/groups/{group}/hold` | stop and ignore wakes until released      |
+//! | POST   | `/api/v1/groups/{group}/release`| lift a hold                             |
 //! | GET    | `/api/v1/events`              | SSE: `status` and `event` messages        |
 
 pub mod api;
@@ -51,6 +53,8 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/v1/groups/{group}", get(api::group))
         .route("/api/v1/groups/{group}/wake", post(api::wake))
         .route("/api/v1/groups/{group}/sleep", post(api::sleep))
+        .route("/api/v1/groups/{group}/hold", post(api::hold))
+        .route("/api/v1/groups/{group}/release", post(api::release))
         .route("/api/v1/events", get(api::events))
         .route("/_sds/check/{group}", get(forward_auth::check).head(forward_auth::check))
         .layer(axum::middleware::from_fn_with_state(Arc::clone(&state), auth::require_token));

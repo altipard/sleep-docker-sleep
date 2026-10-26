@@ -1,6 +1,6 @@
 //! Keeps one actor (and optionally one native proxy listener) per discovered group.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -32,6 +32,9 @@ pub struct Registry {
     http: reqwest::Client,
     entries: RwLock<BTreeMap<String, Entry>>,
     discovery_warnings: RwLock<Vec<String>>,
+    /// Groups on hold. Kept here, not in the actor, so a group that vanishes and comes
+    /// back (`docker compose down` / `up`) is still on hold. Lost when `sds` restarts.
+    held: RwLock<BTreeSet<String>>,
     last_discovery_ms: std::sync::atomic::AtomicU64,
     /// Human-readable description of the Docker endpoint, for the UI.
     pub docker_endpoint: String,
@@ -48,6 +51,7 @@ impl Registry {
             http: reqwest::Client::builder().build().unwrap_or_default(),
             entries: RwLock::new(BTreeMap::new()),
             discovery_warnings: RwLock::new(Vec::new()),
+            held: RwLock::new(BTreeSet::new()),
             last_discovery_ms: std::sync::atomic::AtomicU64::new(0),
             docker_endpoint,
         }
@@ -76,6 +80,29 @@ impl Registry {
 
     pub fn snapshots(&self) -> Vec<GroupSnapshot> {
         self.handles().iter().map(|h| h.snapshot()).collect()
+    }
+
+    /// Put a known group on hold (`true`) or release it (`false`). `None` for an unknown
+    /// group.
+    pub fn set_hold(&self, name: &str, held: bool) -> Option<Arc<GroupHandle>> {
+        let handle = self.get(name)?;
+        if let Ok(mut set) = self.held.write() {
+            if held {
+                set.insert(name.to_owned());
+            } else {
+                set.remove(name);
+            }
+        }
+        if held {
+            handle.hold();
+        } else {
+            handle.release();
+        }
+        Some(handle)
+    }
+
+    fn is_held(&self, name: &str) -> bool {
+        self.held.read().is_ok_and(|set| set.contains(name))
     }
 
     pub fn discovery_warnings(&self) -> Vec<String> {
@@ -152,6 +179,7 @@ impl Registry {
                         self.container_events.subscribe(),
                         self.http.clone(),
                         Timing::default(),
+                        self.is_held(&name),
                     );
                     let mut entry = Entry { link, spec: spec.clone(), proxy: None };
                     self.sync_proxy(&mut entry, &spec);

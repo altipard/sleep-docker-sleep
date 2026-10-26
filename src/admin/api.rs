@@ -67,6 +67,9 @@ pub async fn wake(
     let Some(handle) = state.registry.get(&group) else {
         return not_found(&group);
     };
+    if handle.snapshot().held {
+        return held(&group);
+    }
     // Operator wake: starts even inside the retry pause after a failed attempt.
     if !params.wait {
         handle.force_wake();
@@ -81,6 +84,7 @@ pub async fn wake(
         WakeOutcome::Starting => (StatusCode::ACCEPTED, "starting".to_owned()),
         WakeOutcome::Overloaded => (StatusCode::SERVICE_UNAVAILABLE, "overloaded".to_owned()),
         WakeOutcome::Gone => (StatusCode::GONE, "gone".to_owned()),
+        WakeOutcome::Held => return held(&group),
     };
     (code, Json(serde_json::json!({ "group": group, "result": text, "snapshot": handle.snapshot() }))).into_response()
 }
@@ -92,6 +96,34 @@ pub async fn sleep(State(state): State<SharedState>, Path(group): Path<String>) 
             (StatusCode::ACCEPTED, Json(serde_json::json!({ "group": group, "requested": "sleep" }))).into_response()
         }
         None => not_found(&group),
+    }
+}
+
+fn held(group: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({ "group": group, "error": format!("group `{group}` is on hold; release it first") })),
+    )
+        .into_response()
+}
+
+/// Stop the group and keep it stopped: no request or operator wake starts it until release.
+pub async fn hold(State(state): State<SharedState>, Path(group): Path<String>) -> Response {
+    set_hold(&state, &group, true)
+}
+
+/// Lift a hold. The group stays asleep until the next request.
+pub async fn release(State(state): State<SharedState>, Path(group): Path<String>) -> Response {
+    set_hold(&state, &group, false)
+}
+
+fn set_hold(state: &SharedState, group: &str, held: bool) -> Response {
+    match state.registry.set_hold(group, held) {
+        Some(_) => {
+            let requested = if held { "hold" } else { "release" };
+            (StatusCode::ACCEPTED, Json(serde_json::json!({ "group": group, "requested": requested }))).into_response()
+        }
+        None => not_found(group),
     }
 }
 
