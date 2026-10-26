@@ -73,6 +73,9 @@ pub async fn wait(State(state): State<SharedState>, Path(group): Path<String>) -
         return unknown_group_page(&group, StatusCode::NOT_FOUND).into_response(true);
     };
     let snap = handle.snapshot();
+    if snap.held && snap.state != StateKind::Running {
+        return OutcomeText::of(&WakeOutcome::Held).page(&group, StatusCode::SERVICE_UNAVAILABLE).into_response(true);
+    }
     match snap.state {
         StateKind::Running => WaitPage {
             group: &group,

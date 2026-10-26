@@ -38,6 +38,10 @@ pub enum Command {
     Wake(status::WakeArgs),
     /// Stop a group now
     Sleep(status::SleepArgs),
+    /// Stop a group and keep it stopped until `sds release`
+    Hold(status::HoldArgs),
+    /// Lift a hold; the next request wakes the group again
+    Release(status::HoldArgs),
     /// Attach the terminal dashboard to a running daemon (alias: attach)
     #[command(alias = "attach")]
     Top(status::TopArgs),
@@ -77,6 +81,8 @@ pub async fn main(cli: Cli) -> Result<()> {
         Command::Status(args) => status::status(cli.config.as_deref(), args).await,
         Command::Wake(args) => status::wake(cli.config.as_deref(), args).await,
         Command::Sleep(args) => status::sleep(cli.config.as_deref(), args).await,
+        Command::Hold(args) => status::set_hold(cli.config.as_deref(), args, true).await,
+        Command::Release(args) => status::set_hold(cli.config.as_deref(), args, false).await,
         Command::Top(args) => status::top(cli.config.as_deref(), args).await,
         Command::Check(args) => check::check(cli.config.as_deref(), args).await,
         Command::Init(args) => init::init(args),

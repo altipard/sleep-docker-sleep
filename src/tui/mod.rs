@@ -24,6 +24,8 @@ pub trait Source: Send {
     fn logs(&self) -> Vec<String>;
     fn wake(&self, group: &str);
     fn sleep(&self, group: &str);
+    /// `true` puts the group on hold, `false` releases it.
+    fn set_hold(&self, group: &str, held: bool);
     fn docker_endpoint(&self) -> String;
     /// Shown in the footer, e.g. the web overview URL.
     fn location(&self) -> String;
@@ -61,6 +63,9 @@ impl Source for LocalSource {
             h.request_sleep();
         }
     }
+    fn set_hold(&self, group: &str, held: bool) {
+        self.registry.set_hold(group, held);
+    }
     fn docker_endpoint(&self) -> String {
         self.registry.docker_endpoint.clone()
     }
@@ -73,12 +78,19 @@ impl Source for LocalSource {
 }
 
 /// Remote source for `sds top`: a background task polls `/api/v1/status` and executes
-/// wake/sleep requests; the dashboard thread only reads the latest copy.
+/// wake/sleep/hold requests; the dashboard thread only reads the latest copy.
 pub struct RemoteSource {
     latest: Arc<Mutex<Option<crate::admin::api::StatusResponse>>>,
     error: Arc<Mutex<Option<String>>>,
-    actions: tokio::sync::mpsc::UnboundedSender<(bool, String)>,
+    actions: tokio::sync::mpsc::UnboundedSender<(Action, String)>,
     base: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Action {
+    Wake,
+    Sleep,
+    Hold(bool),
 }
 
 impl RemoteSource {
@@ -87,7 +99,7 @@ impl RemoteSource {
         let first = client.status().await?;
         let latest = Arc::new(Mutex::new(Some(first)));
         let error = Arc::new(Mutex::new(None));
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(bool, String)>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(Action, String)>();
         let base = client.base().to_owned();
         let (latest_bg, error_bg) = (Arc::clone(&latest), Arc::clone(&error));
         tokio::spawn(async move {
@@ -104,8 +116,12 @@ impl RemoteSource {
                             if let Ok(mut err) = error_bg.lock() { *err = Some(e.to_string()); }
                         }
                     },
-                    Some((wake, group)) = rx.recv() => {
-                        let result = if wake { client.wake(&group, false).await } else { client.sleep(&group).await };
+                    Some((action, group)) = rx.recv() => {
+                        let result = match action {
+                            Action::Wake => client.wake(&group, false).await,
+                            Action::Sleep => client.sleep(&group).await,
+                            Action::Hold(held) => client.set_hold(&group, held).await,
+                        };
                         if let Err(e) = result {
                             if let Ok(mut err) = error_bg.lock() { *err = Some(e.to_string()); }
                         }
@@ -152,10 +168,13 @@ impl Source for RemoteSource {
             .unwrap_or_default()
     }
     fn wake(&self, group: &str) {
-        let _ = self.actions.send((true, group.to_owned()));
+        let _ = self.actions.send((Action::Wake, group.to_owned()));
     }
     fn sleep(&self, group: &str) {
-        let _ = self.actions.send((false, group.to_owned()));
+        let _ = self.actions.send((Action::Sleep, group.to_owned()));
+    }
+    fn set_hold(&self, group: &str, held: bool) {
+        let _ = self.actions.send((Action::Hold(held), group.to_owned()));
     }
     fn docker_endpoint(&self) -> String {
         self.latest.lock().ok().and_then(|l| l.as_ref().map(|s| s.docker.clone())).unwrap_or_default()
@@ -308,6 +327,11 @@ impl Dashboard {
                                 self.source.sleep(&g.name);
                             }
                         }
+                        KeyCode::Char('h') => {
+                            if let Some(g) = selected {
+                                self.source.set_hold(&g.name, !g.held);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -360,6 +384,8 @@ impl Dashboard {
             Span::raw(" wake  "),
             Span::styled(" s ", Style::default().add_modifier(Modifier::REVERSED)),
             Span::raw(" sleep  "),
+            Span::styled(" h ", Style::default().add_modifier(Modifier::REVERSED)),
+            Span::raw(" hold/release  "),
             Span::styled(format!(" {} ", self.source.location()), Style::default().fg(Color::DarkGray)),
         ]);
         f.render_widget(Paragraph::new(Line::from(help)), chunks[3]);
@@ -421,7 +447,8 @@ impl Dashboard {
                 let height = u16::try_from(notes.len().max(1)).unwrap_or(1);
                 Row::new(vec![
                     Cell::from(g.name.clone()).bold(),
-                    Cell::from(g.state.to_string()).style(state_style),
+                    Cell::from(if g.held { format!("{} (held)", g.state) } else { g.state.to_string() })
+                        .style(state_style),
                     Cell::from(containers),
                     Cell::from(g.requests_total.to_string()),
                     Cell::from(crate::cli::fmt_age(g.last_activity_ms, now)),

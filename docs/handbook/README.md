@@ -46,6 +46,7 @@ For stacks without any reverse proxy and for plain TCP services there is also a
 | **keep_awake** | A container in the same project that `sds` never stops (e.g. the project's own Caddy). |
 | **Forward-auth** | The mechanism by which the reverse proxy asks `sds` before every request. |
 | **hold / page** | Behaviour while waking up: hold the request, or serve a waiting page. |
+| **On hold** | A group stopped by `sds hold`: nothing wakes it until `sds release`. Not to be confused with the `hold` wake mode. |
 | **Health** | The criterion for when a started group receives traffic (Docker HEALTHCHECK, HTTP, TCP or a grace period). |
 
 ## What `sds` is not

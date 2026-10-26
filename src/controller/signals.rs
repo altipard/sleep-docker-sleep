@@ -6,7 +6,7 @@
 //! Compare the previous bounded `mpsc` with `try_send`, where a request burst could drop
 //! a wake or, worse, a spec update.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use tokio::sync::Notify;
 
@@ -16,8 +16,14 @@ pub(super) struct Signals {
     /// Operator-initiated wake (API, TUI): bypasses the failed-retry pause.
     force_wake: AtomicBool,
     sleep: AtomicBool,
+    /// Last hold request: [`HOLD_NONE`], [`HOLD_ON`] or [`HOLD_OFF`]. Last one wins.
+    hold: AtomicU8,
     notify: Notify,
 }
+
+const HOLD_NONE: u8 = 0;
+const HOLD_ON: u8 = 1;
+const HOLD_OFF: u8 = 2;
 
 /// What the actor found when it woke up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -25,6 +31,8 @@ pub(super) struct Pending {
     pub wake: bool,
     pub force_wake: bool,
     pub sleep: bool,
+    /// `Some(true)` hold, `Some(false)` release.
+    pub hold: Option<bool>,
 }
 
 impl Signals {
@@ -43,6 +51,11 @@ impl Signals {
         self.notify.notify_one();
     }
 
+    pub fn set_hold(&self, held: bool) {
+        self.hold.store(if held { HOLD_ON } else { HOLD_OFF }, Ordering::Release);
+        self.notify.notify_one();
+    }
+
     /// Wait until at least one signal is pending.
     pub async fn notified(&self) {
         self.notify.notified().await;
@@ -54,6 +67,11 @@ impl Signals {
             wake: self.wake.swap(false, Ordering::AcqRel),
             force_wake: self.force_wake.swap(false, Ordering::AcqRel),
             sleep: self.sleep.swap(false, Ordering::AcqRel),
+            hold: match self.hold.swap(HOLD_NONE, Ordering::AcqRel) {
+                HOLD_ON => Some(true),
+                HOLD_OFF => Some(false),
+                _ => None,
+            },
         }
     }
 }
@@ -71,7 +89,9 @@ mod tests {
         s.request_sleep();
         // Permit was stored although nobody was waiting yet.
         tokio::time::timeout(std::time::Duration::from_millis(100), s.notified()).await.unwrap();
-        assert_eq!(s.take(), Pending { wake: true, force_wake: false, sleep: true });
+        s.set_hold(true);
+        s.set_hold(false);
+        assert_eq!(s.take(), Pending { wake: true, force_wake: false, sleep: true, hold: Some(false) });
         assert_eq!(s.take(), Pending::default());
     }
 }

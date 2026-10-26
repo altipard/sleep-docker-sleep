@@ -111,6 +111,9 @@ pub(super) struct GroupActor {
     /// After a failed `docker stop`, no automatic stop before this monotonic ms.
     stop_backoff_until_mono_ms: Option<u64>,
     pending_wake: bool,
+    /// On hold: wakes are ignored until released. Owned by the registry, which passes it
+    /// to a respawned actor so a group recreated by Compose stays on hold.
+    held: bool,
     transition: Option<JoinHandle<Transition>>,
 }
 
@@ -122,6 +125,7 @@ pub(super) fn spawn(
     container_events: broadcast::Receiver<ContainerEvent>,
     http: reqwest::Client,
     timing: Timing,
+    held: bool,
 ) -> ActorLink {
     let activity = Arc::new(Activity::default());
     let signals = Arc::new(Signals::default());
@@ -157,6 +161,7 @@ pub(super) fn spawn(
         partial_since_mono_ms: None,
         stop_backoff_until_mono_ms: None,
         pending_wake: false,
+        held,
         transition: None,
     };
     let (state_tx, state_rx) = watch::channel(actor.snapshot());
@@ -181,6 +186,10 @@ impl GroupActor {
                 _ = cancel.cancelled() => break,
                 _ = signals.notified() => {
                     let pending = signals.take();
+                    // Hold first: a wake that raced with it must already see the hold.
+                    if let Some(held) = pending.hold {
+                        self.on_hold(held);
+                    }
                     if pending.sleep {
                         self.on_sleep(true);
                     }
@@ -245,6 +254,10 @@ impl GroupActor {
     // ----- commands ---------------------------------------------------------------------
 
     fn on_wake(&mut self, force: bool) {
+        if self.held {
+            tracing::debug!(group = %self.spec.name, "wake ignored: group is on hold");
+            return;
+        }
         match self.state {
             StateKind::Stopped | StateKind::Failed => {
                 let since_failure = self.failed_at_mono_ms.map(|t| Duration::from_millis(mono_ms().saturating_sub(t)));
@@ -269,6 +282,23 @@ impl GroupActor {
                 self.emit(EventKind::Warning, "sleep requested while starting; ignored");
             }
             StateKind::Stopped | StateKind::Stopping | StateKind::Failed => {}
+        }
+    }
+
+    fn on_hold(&mut self, held: bool) {
+        if held == self.held {
+            return;
+        }
+        self.held = held;
+        if !held {
+            self.emit(EventKind::Released, "released: the next request wakes the group");
+            return;
+        }
+        self.pending_wake = false;
+        self.emit(EventKind::Held, "on hold: requests no longer wake the group");
+        // A start in progress is stopped as soon as it has finished (see `on_transition`).
+        if self.state != StateKind::Starting {
+            self.on_sleep(true);
         }
     }
 
@@ -327,7 +357,9 @@ impl GroupActor {
     fn begin_stop(&mut self, manual: bool) {
         self.sleeps += 1;
         self.partial_since_mono_ms = None;
-        let why = if manual {
+        let why = if self.held {
+            "put on hold".to_owned()
+        } else if manual {
             "sleep requested".to_owned()
         } else if self.state == StateKind::Running {
             format!("idle for {}", humantime::format_duration(self.spec.settings.idle_timeout))
@@ -356,6 +388,12 @@ impl GroupActor {
                 if self.all_running() {
                     self.set_state(StateKind::Running);
                     self.emit(EventKind::Running, "ready, forwarding traffic");
+                    if self.held {
+                        // Put on hold while starting.
+                        self.begin_stop(true);
+                    }
+                } else if self.held {
+                    self.begin_stop(true);
                 } else {
                     // The member list changed while we were starting (container recreated).
                     self.emit(EventKind::Waking, "members changed during start; starting again");
@@ -558,6 +596,7 @@ impl GroupActor {
         GroupSnapshot {
             name: self.spec.name.clone(),
             state: self.state,
+            held: self.held,
             state_since_ms: self.state_since_ms,
             state_since_mono_ms: self.state_since_mono_ms,
             failed_at_mono_ms: self.failed_at_mono_ms,
@@ -811,7 +850,7 @@ pub(super) mod tests {
         let bus = Arc::new(EventBus::new(50));
         let (ev_tx, ev_rx) = broadcast::channel(16);
         let backend: Arc<dyn Backend> = backend;
-        let link = spawn(spec, backend, Arc::clone(&bus), ev_rx, reqwest::Client::new(), FAST_TIMING);
+        let link = spawn(spec, backend, Arc::clone(&bus), ev_rx, reqwest::Client::new(), FAST_TIMING, false);
         (link, bus, ev_tx)
     }
 
@@ -913,6 +952,53 @@ pub(super) mod tests {
         assert_eq!(snap.wakes_total, 1);
         assert_eq!(backend.stop_calls.lock().unwrap().len(), 1);
         assert_eq!(backend.start_calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn hold_stops_the_group_and_blocks_every_wake_until_released() {
+        let backend = MockBackend::with(&["app"], true);
+        let (link, _bus, _ev) = setup(Arc::clone(&backend), spec(&["app"], fast_settings()));
+        let handle = &link.handle;
+        wait_state(handle, StateKind::Running).await;
+        handle.hold();
+        let snap = wait_state(handle, StateKind::Stopped).await;
+        assert!(snap.held);
+        assert_eq!(backend.stop_calls.lock().unwrap().len(), 1);
+        // Neither traffic nor an operator wake starts a held group.
+        assert_eq!(handle.ensure_ready().await, WakeOutcome::Held);
+        assert_eq!(handle.wake_and_wait().await, WakeOutcome::Held);
+        handle.request_wake();
+        handle.force_wake();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(backend.start_calls.lock().unwrap().is_empty());
+        // Release does not start anything by itself; the next request does.
+        handle.release();
+        let mut rx = handle.subscribe();
+        tokio::time::timeout(Duration::from_secs(5), rx.wait_for(|s| !s.held)).await.unwrap().unwrap();
+        assert_eq!(handle.snapshot().state, StateKind::Stopped);
+        assert_eq!(handle.ensure_ready().await, WakeOutcome::Ready);
+    }
+
+    #[tokio::test]
+    async fn hold_during_start_stops_once_the_start_has_finished() {
+        let backend = MockBackend::with(&["app"], false);
+        let (link, _bus, _ev) = setup(Arc::clone(&backend), spec(&["app"], fast_settings()));
+        let handle = &link.handle;
+        wait_state(handle, StateKind::Stopped).await;
+        handle.force_wake();
+        wait_state(handle, StateKind::Starting).await;
+        handle.hold();
+        let mut rx = handle.subscribe();
+        let snap = tokio::time::timeout(
+            Duration::from_secs(10),
+            rx.wait_for(|s| s.state == StateKind::Stopped && s.sleeps_total == 1),
+        )
+        .await
+        .expect("timed out")
+        .expect("actor gone")
+        .clone();
+        assert!(snap.held);
+        assert_eq!(backend.stop_calls.lock().unwrap().as_slice(), ["id-app"]);
     }
 
     #[tokio::test]

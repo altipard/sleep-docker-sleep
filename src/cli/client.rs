@@ -1,4 +1,4 @@
-//! HTTP client for the admin API, used by `status`, `wake` and `sleep`.
+//! HTTP client for the admin API, used by `status`, `wake`, `sleep`, `hold` and `release`.
 
 use std::path::Path;
 
@@ -69,7 +69,16 @@ impl ApiClient {
     }
 
     pub async fn sleep(&self, group: &str) -> Result<(StatusCode, serde_json::Value)> {
-        let resp = self.send(self.req(reqwest::Method::POST, &format!("/api/v1/groups/{group}/sleep"))).await?;
+        self.action(group, "sleep").await
+    }
+
+    /// `true` puts the group on hold, `false` releases it.
+    pub async fn set_hold(&self, group: &str, held: bool) -> Result<(StatusCode, serde_json::Value)> {
+        self.action(group, if held { "hold" } else { "release" }).await
+    }
+
+    async fn action(&self, group: &str, action: &str) -> Result<(StatusCode, serde_json::Value)> {
+        let resp = self.send(self.req(reqwest::Method::POST, &format!("/api/v1/groups/{group}/{action}"))).await?;
         let code = resp.status();
         let body = resp.json().await.unwrap_or(serde_json::Value::Null);
         Ok((code, body))

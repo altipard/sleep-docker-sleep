@@ -8,21 +8,23 @@
 | `sds status [--json] [--events]` | All groups with state, containers, last request, time left until sleep. |
 | `sds top` (alias `attach`) | Attach the terminal dashboard to the running daemon; `q` detaches, the daemon keeps running. |
 | `sds wake <group> [--wait]` | Start a group; with `--wait` the command blocks until ready (non-zero exit code on failure). |
-| `sds sleep <group>` | Stop a group immediately. |
+| `sds sleep <group>` | Stop a group immediately. The next request wakes it again. |
+| `sds hold <group>` | Stop a group and keep it stopped: neither requests nor `sds wake` start it. |
+| `sds release <group>` | Lift a hold. The group stays asleep until the next request. |
 | `sds check [--json]` | Validate configuration, Docker access and groups without a daemon. Exit code 1 on warnings. |
 | `sds init [--path] [--force] [--stdout]` | Write a commented `sds.toml`. |
 | `sds integrate <nginx\|caddy\|traefik> <group> …` | Print a proxy snippet. |
 | `sds service show\|install\|uninstall` | Show, install or print removal commands for the systemd/launchd unit. |
 | `sds config [--path]` | Show the effective configuration or the path in use. |
 
-`status`, `wake` and `sleep` talk to the running daemon. They read `admin.bind` and
+`status`, `wake`, `sleep`, `hold` and `release` talk to the running daemon. They read `admin.bind` and
 `admin.token` from `sds.toml`; override with `--url` / `--token` or the environment
 variables `SDS_URL` / `SDS_TOKEN`.
 
 ## Terminal dashboard
 
 `sds run` in an interactive session shows groups, state, containers, requests and a log
-pane. Keys: `↑`/`↓` select, `w` wake, `s` sleep, `x` detach, `q` stop the daemon (asks
+pane. Keys: `↑`/`↓` select, `w` wake, `s` sleep, `h` hold/release, `x` detach, `q` stop the daemon (asks
 for a second `q`, because sleeping groups cannot wake without the daemon). Containers are
 never touched by quitting.
 
@@ -39,7 +41,7 @@ there is no need to run `sds run` per project.
 
 At `http://<admin.bind>/` (default `http://127.0.0.1:9900/`) there is a page with the same
 information, live via server-sent events: groups, countdown until sleep, warnings, event
-log, buttons for wake and sleep. Clicking a row shows the effective settings and the
+log, buttons for wake, sleep and hold/release. Clicking a row shows the effective settings and the
 forward-auth URL.
 
 If a token is set, the page asks for it once and stores it in the browser. Only expose it
@@ -55,6 +57,25 @@ beyond the host behind a reverse proxy with TLS.
 | `stopping` | `docker stop` is running. A request in this phase leads to a restart right afterwards. |
 | `failed` | The last start failed (reason in `notes`/`last_error`). For 10 s requests are answered with 503 immediately, then the next request triggers a new attempt; `sds wake` and the dashboard retry at once. Containers that came up but never became healthy keep the group `failed` and are stopped after `idle_timeout`. |
 
+## Keeping a group down
+
+`sds sleep` and `docker compose stop` only put a group to sleep; the next request wakes it.
+For maintenance (migrations, backups, debugging) put it on hold instead:
+
+```bash
+sds hold shop      # stops the group, status shows "stopped (held)"
+sds release shop   # back to normal; the next request wakes it
+```
+
+While on hold, requests get `503` with an "On hold" page (`X-SDS-State: held`), native TCP
+connections are closed, and `sds wake` / `POST …/wake` answer `409`. A start in progress
+when the hold arrives is stopped as soon as it has finished. Starting containers by hand
+(`docker compose up -d`) still works: `sds` tracks them as usual and stops them after
+`idle_timeout`.
+
+The hold survives `docker compose down` / `up` of the group, but not a restart of `sds`
+itself.
+
 External interventions are detected: `docker compose stop` leads to `stopped`,
 `docker compose up -d` to `running` with a fresh idle timer. The event log records them as
 `external`.
@@ -66,7 +87,7 @@ External interventions are detected: `docker compose stop` leads to `stopped`,
 - container: `docker logs -f sds`
 
 With `log.json = true` the output is JSON lines. Every relevant event (discovered, waking,
-running, sleeping, stopped, start_failed, warning, external) appears with the group name.
+running, sleeping, stopped, start_failed, held, released, warning, external) appears with the group name.
 Verbosity via `log.filter` or `SDS_LOG=debug`.
 
 ## Monitoring

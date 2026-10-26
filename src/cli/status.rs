@@ -45,6 +45,14 @@ pub struct SleepArgs {
     pub group: String,
 }
 
+#[derive(Debug, Args)]
+pub struct HoldArgs {
+    #[command(flatten)]
+    pub client: ClientArgs,
+    /// Group name (see `sds status`)
+    pub group: String,
+}
+
 pub fn fmt_age(ms: Option<u64>, now: u64) -> String {
     match ms {
         None => "—".into(),
@@ -62,14 +70,15 @@ fn fmt_ms(ms: Option<u64>) -> String {
     }
 }
 
-fn state_cell(state: StateKind) -> Cell {
-    let color = match state {
+fn state_cell(g: &GroupSnapshot) -> Cell {
+    let color = match g.state {
         StateKind::Running => Color::Green,
         StateKind::Starting | StateKind::Stopping => Color::Yellow,
         StateKind::Failed => Color::Red,
         StateKind::Stopped => Color::DarkGrey,
     };
-    Cell::new(state.to_string()).fg(color)
+    let text = if g.held { format!("{} (held)", g.state) } else { g.state.to_string() };
+    Cell::new(text).fg(color)
 }
 
 pub fn render_table(groups: &[GroupSnapshot], now: u64) -> Table {
@@ -97,7 +106,7 @@ pub fn render_table(groups: &[GroupSnapshot], now: u64) -> Table {
         }
         table.add_row(vec![
             Cell::new(&g.name),
-            state_cell(g.state),
+            state_cell(g),
             Cell::new(containers),
             Cell::new(g.requests_total.to_string()),
             Cell::new(fmt_age(g.last_activity_ms, now)),
@@ -172,6 +181,20 @@ pub async fn sleep(cfg: Option<&Path>, args: SleepArgs) -> Result<()> {
     match code.as_u16() {
         202 => {
             println!("{} {}: sleep requested", "ok".green().bold(), args.group);
+            Ok(())
+        }
+        404 => bail!("unknown group `{}`", args.group),
+        _ => bail!("{}: {}", code, body.get("error").and_then(|v| v.as_str()).unwrap_or("failed")),
+    }
+}
+
+pub async fn set_hold(cfg: Option<&Path>, args: HoldArgs, held: bool) -> Result<()> {
+    let client = ApiClient::from_args(cfg, &args.client)?;
+    let (code, body) = client.set_hold(&args.group, held).await?;
+    match code.as_u16() {
+        202 => {
+            let what = if held { "on hold" } else { "released" };
+            println!("{} {}: {what}", "ok".green().bold(), args.group);
             Ok(())
         }
         404 => bail!("unknown group `{}`", args.group),

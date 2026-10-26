@@ -14,8 +14,10 @@ Base: `http://<admin.bind>` (default `http://127.0.0.1:9900`). With `admin.token
 | GET | `/_sds/wait/<group>` | waiting page (HTML), `503` while not `running`, `404` for an unknown group |
 | GET | `/api/v1/status` | overall state (JSON) |
 | GET | `/api/v1/groups/<group>` | one group (JSON), `404` if unknown |
-| POST | `/api/v1/groups/<group>/wake` | `202` immediately; with `?wait=true` blocking: `200` ready, `502` start failed, `504` timeout, `503` overloaded |
+| POST | `/api/v1/groups/<group>/wake` | `202` immediately; with `?wait=true` blocking: `200` ready, `502` start failed, `504` timeout, `503` overloaded; `409` while on hold |
 | POST | `/api/v1/groups/<group>/sleep` | `202` |
+| POST | `/api/v1/groups/<group>/hold` | `202`; stops the group and blocks every wake until release |
+| POST | `/api/v1/groups/<group>/release` | `202`; lifts the hold, does not start the group |
 | GET | `/api/v1/events` | server-sent events: `status` (every 2 s and on every event) and `event` |
 
 ## `GET /api/v1/status`
@@ -32,6 +34,7 @@ Base: `http://<admin.bind>` (default `http://127.0.0.1:9900`). With `admin.token
     {
       "name": "shop",
       "state": "running",
+      "held": false,
       "state_since_ms": 1792694670314,
       "last_activity_ms": 1792694670323,
       "inflight": 0,
@@ -65,11 +68,12 @@ Base: `http://<admin.bind>` (default `http://127.0.0.1:9900`). With `admin.token
 Times are Unix milliseconds. The remaining time until sleep is
 `last_activity_ms + idle_timeout - now_ms` (only while `state = running`).
 
-`state`: `stopped`, `starting`, `running`, `stopping`, `failed`.
+`state`: `stopped`, `starting`, `running`, `stopping`, `failed`. `held` is `true` while
+the group is on hold (see [Operations](operations.md#keeping-a-group-down)).
 A member's `health`: `none`, `starting`, `healthy`, `unhealthy`.
 `source`: `labels` or `config`.
 An event's `kind`: `discovered`, `removed`, `waking`, `running`, `start_failed`,
-`sleeping`, `stopped`, `stop_failed`, `external`, `warning`.
+`sleeping`, `stopped`, `stop_failed`, `external`, `held`, `released`, `warning`.
 
 ## Examples
 
