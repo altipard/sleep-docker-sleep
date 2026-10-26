@@ -1,0 +1,310 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "sleep-docker-sleep admin API",
+    "version": "0.0.0",
+    "description": "Control and observe the groups of a running `sds` daemon. With `admin.token` set, `/api/*` and `/_sds/check/*` require the token as `X-SDS-Token` or `Authorization: Bearer`.",
+    "license": { "name": "MIT" }
+  },
+  "servers": [{ "url": "/" }],
+  "security": [{ "token": [] }, { "bearer": [] }],
+  "tags": [
+    { "name": "groups", "description": "State and control of groups" },
+    { "name": "reverse proxy", "description": "Endpoints called by nginx, Caddy or Traefik" },
+    { "name": "daemon", "description": "Liveness of sds itself" }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": ["daemon"],
+        "operationId": "healthz",
+        "summary": "Liveness of sds",
+        "security": [],
+        "responses": {
+          "200": { "description": "sds is running", "content": { "text/plain": { "schema": { "type": "string", "const": "ok" } } } }
+        }
+      }
+    },
+    "/api/v1/status": {
+      "get": {
+        "tags": ["groups"],
+        "operationId": "getStatus",
+        "summary": "All groups, discovery warnings and recent events",
+        "responses": {
+          "200": { "description": "Overall state", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Status" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/groups/{group}": {
+      "parameters": [{ "$ref": "#/components/parameters/group" }],
+      "get": {
+        "tags": ["groups"],
+        "operationId": "getGroup",
+        "summary": "One group",
+        "responses": {
+          "200": { "description": "The group", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Group" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/UnknownGroup" }
+        }
+      }
+    },
+    "/api/v1/groups/{group}/wake": {
+      "parameters": [{ "$ref": "#/components/parameters/group" }],
+      "post": {
+        "tags": ["groups"],
+        "operationId": "wakeGroup",
+        "summary": "Start a group now",
+        "description": "Operator wake: also retries right after a failed start. Without `wait` the call returns at once.",
+        "parameters": [
+          { "name": "wait", "in": "query", "description": "Block until the group is ready, failed or `hold_timeout` elapsed", "schema": { "type": "boolean", "default": false } }
+        ],
+        "responses": {
+          "200": { "description": "Running (`wait=true`)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WakeResult" } } } },
+          "202": { "description": "Wake requested", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Accepted" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/UnknownGroup" },
+          "409": { "description": "The group is on hold", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "410": { "description": "The group disappeared while waiting", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WakeResult" } } } },
+          "502": { "description": "Start failed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WakeResult" } } } },
+          "503": { "description": "Too many requests waiting (`max_waiters`)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WakeResult" } } } },
+          "504": { "description": "Not ready within `hold_timeout`", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WakeResult" } } } }
+        }
+      }
+    },
+    "/api/v1/groups/{group}/sleep": {
+      "parameters": [{ "$ref": "#/components/parameters/group" }],
+      "post": {
+        "tags": ["groups"],
+        "operationId": "sleepGroup",
+        "summary": "Stop a group now",
+        "description": "The next request wakes it again. Use `hold` to keep it stopped.",
+        "responses": {
+          "202": { "description": "Sleep requested", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Accepted" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/UnknownGroup" }
+        }
+      }
+    },
+    "/api/v1/groups/{group}/hold": {
+      "parameters": [{ "$ref": "#/components/parameters/group" }],
+      "post": {
+        "tags": ["groups"],
+        "operationId": "holdGroup",
+        "summary": "Stop a group and keep it stopped",
+        "description": "Neither requests nor operator wakes start the group until it is released. Survives `docker compose down`/`up`, not a restart of sds.",
+        "responses": {
+          "202": { "description": "Hold requested", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Accepted" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/UnknownGroup" }
+        }
+      }
+    },
+    "/api/v1/groups/{group}/release": {
+      "parameters": [{ "$ref": "#/components/parameters/group" }],
+      "post": {
+        "tags": ["groups"],
+        "operationId": "releaseGroup",
+        "summary": "Lift a hold",
+        "description": "Does not start the group; the next request does.",
+        "responses": {
+          "202": { "description": "Release requested", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Accepted" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/UnknownGroup" }
+        }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "tags": ["groups"],
+        "operationId": "streamEvents",
+        "summary": "Server-sent events",
+        "description": "`event: status` carries a full `Status` document every 2 s and on every change; `event: event` carries one `Event`.",
+        "responses": {
+          "200": { "description": "Event stream", "content": { "text/event-stream": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/_sds/check/{group}": {
+      "parameters": [{ "$ref": "#/components/parameters/group" }],
+      "get": {
+        "tags": ["reverse proxy"],
+        "operationId": "check",
+        "summary": "Forward-auth check",
+        "description": "Counts as a request. `200` when the group runs; otherwise it is woken and the answer depends on `wake`: hold the request, or deny at once with the waiting page (HTML for `Accept: text/html`, else JSON).",
+        "parameters": [
+          { "name": "mode", "in": "query", "description": "Override the group's `wake` setting", "schema": { "type": "string", "enum": ["hold", "page"] } },
+          { "name": "deny", "in": "query", "description": "Status code for not-ready answers (4xx/5xx; nginx needs 401 or 403)", "schema": { "type": "integer", "default": 503 } }
+        ],
+        "responses": {
+          "200": { "description": "Running: forward the request", "headers": { "X-SDS-State": { "$ref": "#/components/headers/State" } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": {
+            "description": "Not ready (or the code from `deny`)",
+            "headers": { "X-SDS-State": { "$ref": "#/components/headers/State" }, "Retry-After": { "schema": { "type": "integer" } } },
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/WaitState" } },
+              "text/html": { "schema": { "type": "string" } }
+            }
+          }
+        }
+      },
+      "head": {
+        "tags": ["reverse proxy"],
+        "operationId": "checkHead",
+        "summary": "Forward-auth check without body",
+        "responses": {
+          "200": { "description": "Running" },
+          "503": { "description": "Not ready (or the code from `deny`)" }
+        }
+      }
+    },
+    "/_sds/wait/{group}": {
+      "parameters": [{ "$ref": "#/components/parameters/group" }],
+      "get": {
+        "tags": ["reverse proxy"],
+        "operationId": "waitPage",
+        "summary": "Waiting page",
+        "description": "For proxies that cannot relay the check response body (nginx `error_page`). Wakes the group; needs no token.",
+        "security": [],
+        "responses": {
+          "200": { "description": "Running; the page reloads to the site", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "404": { "description": "Unknown group", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "503": { "description": "Starting, failed or on hold", "content": { "text/html": { "schema": { "type": "string" } } } }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "token": { "type": "apiKey", "in": "header", "name": "X-SDS-Token", "description": "`admin.token` from sds.toml" },
+      "bearer": { "type": "http", "scheme": "bearer" }
+    },
+    "parameters": {
+      "group": { "name": "group", "in": "path", "required": true, "description": "Group name (see `GET /api/v1/status`)", "schema": { "type": "string" } }
+    },
+    "headers": {
+      "State": { "description": "Group state as seen by the check", "schema": { "type": "string", "enum": ["running", "starting", "failed", "overloaded", "gone", "held", "unknown-group"] } }
+    },
+    "responses": {
+      "Unauthorized": { "description": "`admin.token` is set and the request has no valid token", "content": { "text/plain": { "schema": { "type": "string" } } } },
+      "UnknownGroup": { "description": "Unknown group", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
+    "schemas": {
+      "Status": {
+        "type": "object",
+        "required": ["version", "now_ms", "uptime_ms", "docker", "last_discovery_ms", "warnings", "groups", "events"],
+        "properties": {
+          "version": { "type": "string" },
+          "now_ms": { "type": "integer", "description": "Unix ms" },
+          "uptime_ms": { "type": "integer" },
+          "docker": { "type": "string", "description": "Docker endpoint" },
+          "last_discovery_ms": { "type": "integer", "description": "Unix ms" },
+          "warnings": { "type": "array", "items": { "type": "string" } },
+          "groups": { "type": "array", "items": { "$ref": "#/components/schemas/Group" } },
+          "events": { "type": "array", "items": { "$ref": "#/components/schemas/Event" } }
+        }
+      },
+      "Group": {
+        "type": "object",
+        "required": ["name", "state", "held", "state_since_ms", "inflight", "requests_total", "wakes_total", "sleeps_total", "members", "warnings", "source", "settings"],
+        "properties": {
+          "name": { "type": "string" },
+          "state": { "type": "string", "enum": ["stopped", "starting", "running", "stopping", "failed"] },
+          "held": { "type": "boolean", "description": "On hold: nothing wakes the group until it is released" },
+          "state_since_ms": { "type": "integer", "description": "Unix ms of the last state change" },
+          "last_activity_ms": { "type": ["integer", "null"], "description": "Unix ms of the last request" },
+          "inflight": { "type": "integer", "description": "Open requests and connections" },
+          "requests_total": { "type": "integer" },
+          "wakes_total": { "type": "integer" },
+          "sleeps_total": { "type": "integer" },
+          "members": { "type": "array", "items": { "$ref": "#/components/schemas/Member" } },
+          "last_error": { "type": ["string", "null"] },
+          "warnings": { "type": "array", "items": { "type": "string" } },
+          "source": { "type": "string", "enum": ["labels", "config"] },
+          "settings": { "$ref": "#/components/schemas/Settings" }
+        }
+      },
+      "Member": {
+        "type": "object",
+        "required": ["name", "id", "running", "health"],
+        "properties": {
+          "name": { "type": "string" },
+          "id": { "type": "string", "description": "First 12 characters of the container id" },
+          "running": { "type": "boolean" },
+          "health": { "type": "string", "enum": ["none", "starting", "healthy", "unhealthy"] }
+        }
+      },
+      "Settings": {
+        "type": "object",
+        "description": "Effective group settings; durations in humantime format (`15m`, `1m 30s`)",
+        "properties": {
+          "idle_timeout": { "type": "string" },
+          "start_timeout": { "type": "string" },
+          "stop_timeout": { "type": "string" },
+          "start_grace": { "type": "string" },
+          "health": { "type": "string", "description": "`docker`, `grace`, an `http://` URL or a `tcp://` address" },
+          "wake": { "type": "string", "enum": ["hold", "page"] },
+          "hold_timeout": { "type": "string" },
+          "max_waiters": { "type": "integer" },
+          "proxy": {
+            "type": "object",
+            "properties": {
+              "listen": { "type": "string" },
+              "upstream": { "type": "string" },
+              "mode": { "type": "string", "enum": ["http", "tcp"] }
+            }
+          }
+        }
+      },
+      "Event": {
+        "type": "object",
+        "required": ["ts_ms", "group", "kind", "message"],
+        "properties": {
+          "ts_ms": { "type": "integer", "description": "Unix ms" },
+          "group": { "type": "string", "description": "`-` for events not tied to a group" },
+          "kind": {
+            "type": "string",
+            "enum": ["discovered", "removed", "waking", "running", "start_failed", "sleeping", "stopped", "stop_failed", "external", "held", "released", "warning"]
+          },
+          "message": { "type": "string" }
+        }
+      },
+      "Accepted": {
+        "type": "object",
+        "required": ["group", "requested"],
+        "properties": {
+          "group": { "type": "string" },
+          "requested": { "type": "string", "enum": ["wake", "sleep", "hold", "release"] }
+        }
+      },
+      "WakeResult": {
+        "type": "object",
+        "required": ["group", "result", "snapshot"],
+        "properties": {
+          "group": { "type": "string" },
+          "result": { "type": "string", "description": "`running`, `timeout`, `failed: <reason>`, `starting`, `overloaded` or `gone`" },
+          "snapshot": { "$ref": "#/components/schemas/Group" }
+        }
+      },
+      "WaitState": {
+        "type": "object",
+        "required": ["group", "state", "message"],
+        "properties": {
+          "group": { "type": "string" },
+          "state": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string" },
+          "group": { "type": "string" }
+        }
+      }
+    }
+  }
+}

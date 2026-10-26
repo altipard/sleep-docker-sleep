@@ -21,6 +21,7 @@
   header h1 { font-size: 16px; margin: 0; font-weight: 600; }
   header h1 span { color: var(--muted); font-weight: 400; }
   header .meta { margin-left: auto; color: var(--muted); font-size: 12px; display: flex; gap: 16px; }
+  header .meta a { color: var(--accent); text-decoration: none; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--idle); margin-right: 6px; vertical-align: middle; }
   .dot.live { background: var(--ok); }
   main { padding: 20px 24px; display: grid; gap: 20px; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); }
@@ -76,6 +77,7 @@
     <span id="conn"><span class="dot"></span>connecting…</span>
     <span id="docker"></span>
     <span id="version"></span>
+    <a href="/docs">API docs</a>
   </div>
 </header>
 <main>
