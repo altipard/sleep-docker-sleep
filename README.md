@@ -48,8 +48,9 @@ browser ──▶ reverse proxy ──(forward-auth: /_sds/check/shop)──▶ 
 - **Native proxy as a fallback.** For stacks without a reverse proxy and for TCP services
   such as databases, `sds` can own the public port itself (streaming, WebSocket aware).
 - **Operator tooling included.** CLI, live terminal dashboard (`sds top` attaches to the
-  running service), web overview with event log, JSON API and SSE stream, generated proxy
-  snippets, systemd/launchd units.
+  running service), web overview with event log, JSON API with OpenAPI spec and Swagger
+  UI, SSE stream, hold/release for maintenance, generated proxy snippets, systemd/launchd
+  units.
 
 ## Contents
 
@@ -195,10 +196,12 @@ Details and the exact snippets are in the [reverse proxy chapter](docs/handbook/
 | Tool | What it gives you |
 |---|---|
 | `sds run` | The daemon with a live terminal dashboard; `x` detaches, the daemon keeps running. |
-| `sds top` | Attach the dashboard to a running daemon, wake or sleep groups with `w` and `s`. |
+| `sds top` | Attach the dashboard to a running daemon, wake or sleep groups with `w` and `s`, hold/release with `h`. |
 | `http://127.0.0.1:9900/` | Web overview with group states, counters and the event log. |
 | `sds status`, `sds wake`, `sds sleep` | Scripting and quick checks; `--json` for machines. |
-| `/api/v1/status`, `/api/v1/events` | JSON API and server-sent events for your own tooling. |
+| `sds hold`, `sds release` | Keep a group stopped for maintenance; requests do not wake it until released. |
+| `/api/v1/…`, `/api/v1/events` | JSON API and server-sent events for your own tooling. |
+| `http://127.0.0.1:9900/docs` | Swagger UI for the API; the spec is at `/openapi.json`. |
 | `sds service install` | Writes the systemd unit or launchd plist. |
 
 ## Documentation
