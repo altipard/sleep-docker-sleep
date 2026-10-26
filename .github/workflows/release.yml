@@ -11,6 +11,12 @@ permissions:
   contents: write
   packages: write
 
+# One release at a time: a run computes its version only after the previous run has
+# tagged, so two quick pushes cannot both claim the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   IMAGE: ghcr.io/${{ github.repository }}
@@ -33,6 +39,11 @@ jobs:
         # that warning to stdout, so only a line that looks like a version is accepted.
         run: |
           VERSION=$(cz bump --get-next --yes 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | tail -n1 || true)
+          git fetch --quiet --tags origin
+          if [ -n "$VERSION" ] && git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "tag $VERSION already exists; nothing to release"
+            VERSION=""
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "next version: ${VERSION:-none (no release-relevant commits)}"
 
