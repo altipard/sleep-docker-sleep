@@ -4,12 +4,19 @@ Base: `http://<admin.bind>` (default `http://127.0.0.1:9900`). With `admin.token
 `/api/*` and `/_sds/check/*` require the header `X-SDS-Token: <token>` or
 `Authorization: Bearer <token>`; otherwise `401`.
 
+Interactive documentation (Swagger UI) is at `http://<admin.bind>/docs`, linked from the
+web overview; the OpenAPI 3.1 specification is at `/openapi.json`. Both need no token.
+Swagger UI itself is loaded from cdn.jsdelivr.net; without internet access the page links
+to the raw specification instead.
+
 ## Overview
 
 | Method | Path | Response |
 |---|---|---|
 | GET | `/healthz` | `ok` (text) |
 | GET | `/` | web overview (HTML) |
+| GET | `/docs` | Swagger UI (HTML) |
+| GET | `/openapi.json` | OpenAPI specification |
 | GET | `/_sds/check/<group>` | forward-auth, see [Reverse proxy](reverse-proxy.md) |
 | GET | `/_sds/wait/<group>` | waiting page (HTML), `503` while not `running`, `404` for an unknown group |
 | GET | `/api/v1/status` | overall state (JSON) |

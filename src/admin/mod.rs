@@ -7,6 +7,8 @@
 //! |--------|-------------------------------|-------------------------------------------|
 //! | GET    | `/`                           | web overview                              |
 //! | GET    | `/healthz`                    | liveness of `sds` itself                  |
+//! | GET    | `/docs`                       | Swagger UI for the API                    |
+//! | GET    | `/openapi.json`               | OpenAPI specification                     |
 //! | GET    | `/_sds/check/{group}`         | forward-auth: 200 when running, else wake |
 //! | GET    | `/_sds/wait/{group}`          | waiting page (for nginx `error_page`)     |
 //!
@@ -62,6 +64,8 @@ pub fn router(state: SharedState) -> Router {
     Router::new()
         .route("/", get(web::index))
         .route("/logo.svg", get(web::logo))
+        .route("/docs", get(web::docs))
+        .route("/openapi.json", get(web::openapi))
         .route("/healthz", get(|| async { "ok" }))
         .route("/_sds/wait/{group}", get(forward_auth::wait))
         .merge(protected)

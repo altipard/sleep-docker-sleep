@@ -42,7 +42,7 @@ there is no need to run `sds run` per project.
 At `http://<admin.bind>/` (default `http://127.0.0.1:9900/`) there is a page with the same
 information, live via server-sent events: groups, countdown until sleep, warnings, event
 log, buttons for wake, sleep and hold/release. Clicking a row shows the effective settings and the
-forward-auth URL.
+forward-auth URL. The header links to the API documentation at `/docs`.
 
 If a token is set, the page asks for it once and stores it in the browser. Only expose it
 beyond the host behind a reverse proxy with TLS.
