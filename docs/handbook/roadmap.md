@@ -40,3 +40,14 @@ first because it is small.
 Only the nginx snippet can bypass an unreachable `sds`. A tiny health-aware fallback for
 the forward-auth path would close the gap, see
 [Limitations](limitations.md#fail-open-only-with-nginx).
+
+## Hold that survives a restart of sds
+
+`sds hold` is kept in memory: it survives `docker compose down` / `up` of the group, but a
+restart of `sds` (update, crash, host reboot) forgets it, and the next request wakes a
+group that is meant to stay down for maintenance. Writing the set of held groups to a
+small state file (e.g. next to `sds.toml` or in the service's state directory) and loading
+it at startup would close that. Needs a writable location in every install variant
+(systemd, launchd, container), so the path should be configurable and a missing or
+unwritable file only a warning. See
+[Operations](operations.md#keeping-a-group-down).
