@@ -67,6 +67,26 @@ src/
 - A failed `docker stop` is retried with a backoff of one `idle_timeout`, and the error
   stays visible in `last_error` until a stop succeeds.
 
+## Running from source
+
+```bash
+cargo run -- run                          # dashboard when attached to a terminal
+cargo run -- run --headless               # logs only
+cargo run -- run --config sds.toml        # explicit config
+cargo run -- run --bind 127.0.0.1:9901    # next to an installed sds on :9900
+cargo run -- status                       # any other command from a second shell
+```
+
+Arguments after `--` go to `sds`. Without `--config` the usual search applies
+(`$SDS_CONFIG`, `./sds.toml`, `~/.config/sds/sds.toml`, `/etc/sds/sds.toml`), then the
+built-in defaults. The `justfile` wraps the common cases: `just init` writes `sds.toml`
+into the repository, `just run` / `just run-headless` start the daemon with it, `just top`
+and `just status` talk to it. The web overview is then at `http://127.0.0.1:9900/`, the
+API documentation at `/docs`.
+
+A local build reports the version from `Cargo.toml`; release builds get the version from
+the git tag.
+
 ## Tests
 
 - Unit tests per module (`cargo test`), including the state machine against an in-memory
