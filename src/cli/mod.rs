@@ -7,6 +7,7 @@ mod integrate;
 mod run;
 mod service;
 mod status;
+mod update;
 
 use std::path::PathBuf;
 
@@ -55,6 +56,8 @@ pub enum Command {
     Service(service::ServiceArgs),
     /// Show the effective configuration
     Config(ConfigArgs),
+    /// Replace this binary with the latest release from GitHub
+    Update(update::UpdateArgs),
 }
 
 /// Connection settings for commands that talk to a running daemon.
@@ -89,6 +92,7 @@ pub async fn main(cli: Cli) -> Result<()> {
         Command::Integrate(args) => integrate::integrate(cli.config.as_deref(), args),
         Command::Service(args) => service::service(cli.config.as_deref(), args),
         Command::Config(args) => show_config(cli.config.as_deref(), args),
+        Command::Update(args) => update::update(args).await,
     }
 }
 
@@ -104,4 +108,16 @@ fn show_config(explicit: Option<&std::path::Path>, args: ConfigArgs) -> Result<(
     println!("# source: {source}");
     print!("{}", toml::to_string_pretty(&cfg)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    /// clap only checks argument definitions when a subcommand is parsed; catch clashes
+    /// (e.g. a `--version` option next to the global flag) in the test run instead.
+    #[test]
+    fn cli_definition_is_consistent() {
+        super::Cli::command().debug_assert();
+    }
 }

@@ -203,6 +203,7 @@ Details and the exact snippets are in the [reverse proxy chapter](docs/handbook/
 | `/api/v1/…`, `/api/v1/events` | JSON API and server-sent events for your own tooling. |
 | `http://127.0.0.1:9900/docs` | Swagger UI for the API; the spec is at `/openapi.json`. |
 | `sds service install` | Writes the systemd unit or launchd plist. |
+| `sds update` | Installs the latest release in place; `--check` only reports. |
 
 ## Documentation
 
