@@ -102,8 +102,8 @@ pub async fn wait(State(state): State<SharedState>, Path(group): Path<String>) -
             handle.request_wake();
             WaitPage {
                 group: &group,
-                title: "Waking up",
-                message: "The service was asleep and is starting now. This page reloads automatically.",
+                title: "Your service will be up in a moment",
+                message: "It was asleep to save resources and is starting now. This page reloads automatically.",
                 status: StatusCode::SERVICE_UNAVAILABLE,
                 refresh_secs: Some(3),
                 state: &snap.state.to_string(),

@@ -7,6 +7,23 @@ use crate::controller::WakeOutcome;
 
 const TEMPLATE: &str = include_str!("assets/wait.html");
 
+/// The logo as a `data:` URL. The page is served under the sleeping app's host, where
+/// `/logo.svg` would be one more request to the app (answered with this page, not an image).
+static LOGO_DATA_URL: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| data_url(include_str!("../../assets/logo/sds-logo.svg")));
+
+fn data_url(svg: &str) -> String {
+    let mut out = String::from("data:image/svg+xml,");
+    for b in svg.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.~!$'()*+,;=:@/?".contains(&b) {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 pub struct WaitPage<'a> {
     pub group: &'a str,
     pub title: &'a str,
@@ -29,6 +46,7 @@ impl WaitPage<'_> {
             .replace("{{message}}", &escape(self.message))
             .replace("{{state}}", &escape(self.state))
             .replace("{{refresh}}", &self.refresh_secs.map(|s| s.to_string()).unwrap_or_default())
+            .replace("{{logo}}", &LOGO_DATA_URL)
     }
 
     pub fn into_response(self, wants_html: bool) -> Response {
@@ -80,14 +98,14 @@ impl OutcomeText {
         let (title, message, state, retry_secs) = match outcome {
             WakeOutcome::Ready => ("Ready", "The service is up.".to_owned(), "running", 0),
             WakeOutcome::Starting => (
-                "Waking up",
-                "The service was asleep and is starting now. This page reloads automatically.".to_owned(),
+                "Your service will be up in a moment",
+                "It was asleep to save resources and is starting now. This page reloads automatically.".to_owned(),
                 "starting",
                 3,
             ),
             WakeOutcome::Timeout => (
-                "Still starting",
-                "The service is taking longer than expected. This page keeps retrying.".to_owned(),
+                "Almost there",
+                "Starting takes a little longer than usual. This page keeps retrying.".to_owned(),
                 "starting",
                 5,
             ),
@@ -149,5 +167,13 @@ mod tests {
         assert!(html.contains("&lt;b&gt;x&lt;/b&gt;"));
         assert!(html.contains("a &amp; b"));
         assert!(!html.contains("{{"));
+    }
+
+    #[test]
+    fn page_needs_no_second_request_for_the_logo() {
+        let html = OutcomeText::of(&WakeOutcome::Starting).page("shop", StatusCode::SERVICE_UNAVAILABLE).html();
+        assert!(!html.contains("/logo.svg"));
+        assert!(html.contains("src=\"data:image/svg+xml,"));
+        assert!(!LOGO_DATA_URL.contains('"') && !LOGO_DATA_URL.contains('#') && !LOGO_DATA_URL.contains('<'));
     }
 }
