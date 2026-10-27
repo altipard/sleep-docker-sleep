@@ -16,6 +16,7 @@
 | `sds integrate <nginx\|caddy\|traefik> <group> …` | Print a proxy snippet. |
 | `sds service show\|install\|uninstall` | Show, install or print removal commands for the systemd/launchd unit. |
 | `sds config [--path]` | Show the effective configuration or the path in use. |
+| `sds update [--check] [--tag VERSION] [--force]` | Replace the binary with the latest (or a given) GitHub release; restart the service afterwards. |
 
 `status`, `wake`, `sleep`, `hold` and `release` talk to the running daemon. They read `admin.bind` and
 `admin.token` from `sds.toml`; override with `--url` / `--token` or the environment

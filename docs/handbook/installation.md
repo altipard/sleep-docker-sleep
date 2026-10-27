@@ -84,7 +84,20 @@ local Docker daemon. An overview across hosts can be built on the [HTTP API](api
 
 ## Upgrading
 
-Replace the binary and restart the service:
+`sds update` downloads the latest release for this platform from GitHub, checks that it
+runs and reports the expected version, and replaces the running binary in place. Restart
+the service afterwards:
+
+```bash
+sds update --check                          # only report whether a newer release exists
+sudo sds update && sudo systemctl restart sds
+sudo sds update && sudo launchctl kickstart -k system/com.zilicon.sds   # macOS
+sudo sds update --tag 0.3.0                 # a specific release, e.g. to roll back
+```
+
+A build from source (`0.3.0-5-g7beac6a`) is not replaced unless `--force` is given. In the
+container image `sds update` refuses; pull the new image instead. By hand it is the same as
+before:
 
 ```bash
 sudo install -m 755 sds /usr/local/bin/sds && sudo systemctl restart sds
