@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{title}} · {{group}}</title>
-<link rel="icon" type="image/svg+xml" href="/logo.svg">
+<link rel="icon" type="image/svg+xml" href="{{logo}}">
 <style>
   :root { color-scheme: light dark; --fg: #1b1f24; --bg: #f6f7f9; --muted: #6b7280; --accent: #2563eb; --card: #fff; --border: #e5e7eb; }
   @media (prefers-color-scheme: dark) { :root { --fg: #e6e8eb; --bg: #0f1216; --muted: #9aa3af; --accent: #60a5fa; --card: #161b22; --border: #2a3139; } }
@@ -17,6 +17,7 @@
   .group { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9rem; color: var(--fg); }
   .spinner { width: 40px; height: 40px; margin: 0 auto; border: 4px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
   .spinner[data-state="failed"], .spinner[data-state="overloaded"] { animation: none; border-color: #ef4444; }
+  .spinner[data-state="held"] { animation: none; border-color: #d97706; }
   @keyframes spin { to { transform: rotate(360deg); } }
   small { color: var(--muted); font-size: .8rem; }
 </style>
@@ -24,7 +25,7 @@
 <body>
   <main class="card">
     <div class="spinner" data-state="{{state}}"></div>
-    <img class="logo" src="/logo.svg" alt="" width="64" height="64">
+    <img class="logo" src="{{logo}}" alt="" width="64" height="64">
     <h1>{{title}}</h1>
     <p class="group">{{group}}</p>
     <p>{{message}}</p>
