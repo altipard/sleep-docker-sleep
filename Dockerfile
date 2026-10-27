@@ -2,11 +2,12 @@
 # sds as a container: mount the Docker socket, join the proxy network, done.
 FROM rust:1.90-bookworm AS build
 WORKDIR /src
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
 # The logo is compiled into the binary for the web UI.
 COPY assets/logo/sds-logo.svg ./assets/logo/
-# Version is stamped at build time; the release workflow passes the tag.
+# Version is stamped at build time (build.rs reads SDS_VERSION); the release workflow
+# passes the tag.
 ARG SDS_VERSION=0.0.0-dev
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \

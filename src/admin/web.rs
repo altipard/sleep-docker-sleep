@@ -26,7 +26,7 @@ pub async fn openapi() -> Response {
         Ok(v) => v,
         Err(_) => return ([(header::CONTENT_TYPE, "application/json")], OPENAPI).into_response(),
     };
-    spec["info"]["version"] = serde_json::Value::from(env!("CARGO_PKG_VERSION"));
+    spec["info"]["version"] = serde_json::Value::from(crate::VERSION);
     axum::Json(spec).into_response()
 }
 

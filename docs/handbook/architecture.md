@@ -84,8 +84,10 @@ into the repository, `just run` / `just run-headless` start the daemon with it, 
 and `just status` talk to it. The web overview is then at `http://127.0.0.1:9900/`, the
 API documentation at `/docs`.
 
-A local build reports the version from `Cargo.toml`; release builds get the version from
-the git tag.
+The version shown by `--version`, the web overview, the API and the dashboard comes from
+`build.rs`: `SDS_VERSION` when set (release builds and the image), otherwise
+`git describe --tags` of the checkout, e.g. `0.3.0-3-g34a5faa` three commits after 0.3.0.
+`cargo install --git` builds without git metadata and reports the `Cargo.toml` version.
 
 ## Tests
 

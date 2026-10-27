@@ -68,6 +68,8 @@ jobs:
       - name: stamp version
         run: sed -i.bak "s/^version = \".*\"/version = \"${{ needs.version.outputs.version }}\"/" Cargo.toml && rm Cargo.toml.bak
       - run: cargo build --release --target ${{ matrix.target }}
+        env:
+          SDS_VERSION: ${{ needs.version.outputs.version }}
       - run: cp target/${{ matrix.target }}/release/sds ${{ matrix.name }}
       - uses: actions/upload-artifact@v4
         with:

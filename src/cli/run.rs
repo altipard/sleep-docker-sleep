@@ -31,7 +31,7 @@ pub async fn run(explicit: Option<&Path>, args: RunArgs) -> Result<()> {
 
     let log_buffer = crate::tui::LogBuffer::new(500);
     init_tracing(&cfg, use_tui, &log_buffer);
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), config = %source, "sds starting");
+    tracing::info!(version = crate::VERSION, config = %source, "sds starting");
     if !cfg.admin.bind.ip().is_loopback() && cfg.admin.token.is_none() {
         tracing::warn!(
             bind = %cfg.admin.bind,

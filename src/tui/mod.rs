@@ -397,7 +397,7 @@ impl Dashboard {
         let failed = groups.iter().filter(|g| g.state == StateKind::Failed).count();
         let line = Line::from(vec![
             Span::styled(" sleep-docker-sleep ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!("v{}  ", env!("CARGO_PKG_VERSION"))),
+            Span::raw(format!("v{}  ", crate::VERSION)),
             Span::styled(format!("{running} running"), Style::default().fg(Color::Green)),
             Span::raw("  "),
             Span::styled(format!("{asleep} asleep"), Style::default().fg(Color::DarkGray)),
