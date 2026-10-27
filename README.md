@@ -64,6 +64,7 @@ browser ──▶ reverse proxy ──(forward-auth: /_sds/check/shop)──▶ 
 - [How it compares](#how-it-compares)
 - [Status](#status)
 - [Development](#development)
+- [Acknowledgements](#acknowledgements)
 - [License](#license)
 
 ## Installation
@@ -247,6 +248,22 @@ Rust 1.85+ and [just](https://just.systems) are the only tools needed. Examples 
 nginx and Caddy, project and central Traefik, the native proxy and the demo stack live
 under [`examples/`](examples/README.md). Commits follow Conventional Commits; releases are
 cut automatically from `main`.
+
+## Acknowledgements
+
+*An ode to [pandiloko](https://github.com/pandiloko)*
+
+> Somewhere a container idles, burning watts for no one's sake,\
+> and somewhere pandiloko asked: why keep it all awake?\
+> Let it sleep until it's needed, wake it gently when they call,\
+> one request to stir the whale, and no one notices at all.
+>
+> So here's to the colleague with the question and the spark,\
+> who watched the servers humming on and said: let them go dark.\
+> Every group that naps tonight, every watt that's left unspent,\
+> carries a small thank-you note to where the idea went.
+
+`sds` exists because pandiloko had the idea first. Thank you.
 
 ## License
 
