@@ -26,7 +26,7 @@ pub struct StatusResponse {
 
 pub fn build_status(state: &SharedState) -> StatusResponse {
     StatusResponse {
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: crate::VERSION.to_owned(),
         now_ms: epoch_ms(),
         uptime_ms: u64::try_from(state.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
         docker: state.registry.docker_endpoint.clone(),

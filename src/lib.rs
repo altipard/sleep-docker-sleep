@@ -24,3 +24,7 @@ pub mod service;
 pub mod tui;
 
 pub const LABEL_PREFIX: &str = "sds.";
+
+/// Version of this build: the release tag, or `git describe` for a local build (see
+/// `build.rs`).
+pub const VERSION: &str = env!("SDS_VERSION");

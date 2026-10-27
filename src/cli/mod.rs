@@ -18,7 +18,7 @@ pub use status::fmt_age;
 
 /// sleep-docker-sleep: stop idle Docker containers and wake them on the first request.
 #[derive(Debug, Parser)]
-#[command(name = "sds", version, about, long_about = None, propagate_version = true)]
+#[command(name = "sds", version = crate::VERSION, about, long_about = None, propagate_version = true)]
 pub struct Cli {
     /// Path to sds.toml (default: $SDS_CONFIG, ./sds.toml, ~/.config/sds/sds.toml, /etc/sds/sds.toml)
     #[arg(short, long, global = true, env = "SDS_CONFIG", value_name = "PATH")]
