@@ -156,6 +156,10 @@ sds run          # second terminal
 | `sds.keep_awake` | `false` | Never stop this group (databases shared by several stacks). |
 | `sds.proxy.listen` | | Let `sds` own a public port itself, see [native proxy](docs/handbook/native-proxy.md). |
 
+Compose is not required: with plain `docker run --label sds.enable=true --label
+sds.group=shop …` the containers form the same group, see the
+[`docker run` example](docs/handbook/labels.md#example-plain-docker-run-without-compose).
+
 Defaults live in `sds.toml`; labels override them per group. The full list is in the
 [labels chapter](docs/handbook/labels.md).
 
