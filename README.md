@@ -250,8 +250,8 @@ just docs-serve # handbook with live reload (mdBook)
 
 Rust 1.85+ and [just](https://just.systems) are the only tools needed. Examples for host
 nginx and Caddy, project and central Traefik, the native proxy and the demo stack live
-under [`examples/`](examples/README.md). Commits follow Conventional Commits; releases are
-cut automatically from `main`.
+under [`examples/`](examples/README.md). Commits follow Conventional Commits. Work lands on
+`develop`; merging `develop` into `main` cuts the release automatically.
 
 ## Acknowledgements
 
