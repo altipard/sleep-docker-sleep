@@ -108,6 +108,12 @@ on pull requests. `.github/workflows/release.yml` runs on `main`: it asks commit
 the next version, builds binaries for Linux and macOS with that version stamped into the
 binary, pushes the image to `ghcr.io` and creates the tag and the GitHub release.
 
+Development happens on `develop`, the default branch; feature branches and outside pull
+requests target it. A release is a pull request from `develop` into `main`, merged with a
+merge commit: a squash would hide the individual `feat`/`fix` commits from commitizen and
+let the two branches drift apart. `main` accepts changes only through pull requests with
+green CI and refuses force pushes; `develop` refuses force pushes and deletion.
+
 ## Extension points
 
 - Another proxy type: add a render function in `integrate/mod.rs`.
