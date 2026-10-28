@@ -1,7 +1,8 @@
 # Labels and groups
 
 Containers describe themselves how `sds` should treat them. Project teams only have to put
-labels into their Compose file; no central list is needed.
+labels into their Compose file or `docker run` call; no central list is needed. Compose
+itself is optional, `sds` only reads labels through the Docker API.
 
 ## Forming groups
 
@@ -102,6 +103,32 @@ services:
 After `docker compose up -d` the group `shop` appears in `sds status`. Caddy keeps
 running and asks `sds` via `host.docker.internal:9900`, see
 [Reverse proxy integration](reverse-proxy.md).
+
+## Example: plain `docker run` without Compose
+
+Without Compose there is no project label, so set `sds.group` explicitly. Otherwise every
+container becomes its own group, named after the container.
+
+```bash
+docker network create shop
+
+docker run -d --name shop-db --network shop --restart unless-stopped \
+  --label sds.enable=true --label sds.group=shop \
+  --label sds.health=tcp://127.0.0.1:5432 -p 127.0.0.1:5432:5432 \
+  postgres:16
+
+docker run -d --name shop-app --network shop --restart unless-stopped \
+  --label sds.enable=true --label sds.group=shop --label sds.idle_timeout=20m \
+  -p 127.0.0.1:18080:8080 \
+  registry.example.com/shop:1.4.2
+```
+
+`sds status` lists the group `shop` with both members. Differences to Compose:
+
+- Labels are fixed when the container is created. To change one, `docker rm` the
+  container and `docker run` it again; `sds` picks up the new container automatically.
+- Networks and volumes are yours to create; `sds` only starts and stops existing
+  containers and never recreates them.
 
 ## Interaction with restart policies
 
