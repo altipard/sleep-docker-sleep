@@ -4,6 +4,8 @@ use axum::response::{Html, IntoResponse, Response};
 const INDEX: &str = include_str!("assets/index.html");
 const DOCS: &str = include_str!("assets/docs.html");
 const OPENAPI: &str = include_str!("assets/openapi.json");
+const SWAGGER_CSS: &str = include_str!("assets/swagger-ui.css");
+const SWAGGER_JS: &str = include_str!("assets/swagger-ui-bundle.js");
 const LOGO: &str = include_str!("../../assets/logo/sds-logo.svg");
 
 pub async fn index() -> Response {
@@ -18,6 +20,28 @@ pub async fn logo() -> Response {
 
 pub async fn docs() -> Response {
     Html(DOCS).into_response()
+}
+
+pub async fn swagger_css() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        SWAGGER_CSS,
+    )
+        .into_response()
+}
+
+pub async fn swagger_js() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        SWAGGER_JS,
+    )
+        .into_response()
 }
 
 /// The hand-written spec with `info.version` set to the running binary's version.
