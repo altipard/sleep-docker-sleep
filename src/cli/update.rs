@@ -199,4 +199,25 @@ mod tests {
         let workflow = include_str!("../../.github/workflows/release.yml");
         assert!(workflow.contains(&format!("name: {name} ")), "{name} not built by release.yml");
     }
+
+    #[test]
+    fn release_signature_is_verified_and_tampering_is_rejected() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let signing = SigningKey::from_bytes(&[7; 32]);
+        let public = hex::encode(signing.verifying_key().to_bytes());
+        let binary = b"trusted sds binary";
+        let signature = signing.sign(binary).to_bytes().to_vec();
+        verify_release(binary, &signature, &public).unwrap();
+        assert!(verify_release(b"tampered", &signature, &public).is_err());
+        assert!(verify_release(binary, &signature, &RELEASE_PUBLIC_KEY_HEX).is_err());
+    }
+
+    #[test]
+    fn release_workflow_signs_every_binary_before_publishing() {
+        let workflow = include_str!("../../.github/workflows/release.yml");
+        assert!(workflow.contains("SDS_SIGNING_PRIVATE_KEY"));
+        assert!(workflow.contains("pkeyutl -sign -rawin"));
+        assert!(workflow.contains("$file.sig"));
+    }
 }
