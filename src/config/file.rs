@@ -336,4 +336,12 @@ mod tests {
     fn explicit_missing_file_is_an_error() {
         assert!(load(Some(Path::new("/nonexistent/sds.toml"))).is_err());
     }
+
+    #[test]
+    fn serialized_config_redacts_the_admin_token() {
+        let cfg: Config = toml::from_str("[admin]\ntoken = \"supersecret\"").unwrap();
+        let output = toml::to_string_pretty(&cfg).unwrap();
+        assert!(!output.contains("supersecret"));
+        assert!(output.contains("token = \"<redacted>\""));
+    }
 }

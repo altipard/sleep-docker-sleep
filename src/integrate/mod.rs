@@ -261,6 +261,28 @@ mod tests {
     }
 
     #[test]
+    fn traefik_sends_token_only_to_auth_and_strips_it_from_the_application() {
+        let s = render(ProxyKind::Traefik, &input());
+        assert!(!s.contains("?token="), "secrets must not be placed in URLs");
+        assert!(s.contains("address: \"http://127.0.0.1:9900/_sds/check/shop\""));
+        assert!(s.contains("authRequestHeaders:\n            - X-SDS-Token"));
+        assert!(s.contains("sds-shop-token:"));
+        assert!(s.contains("sds-shop-strip-token:"));
+        assert!(s.contains("X-SDS-Token: \"t0k\""));
+        assert!(s.contains("X-SDS-Token: \"\""));
+        assert!(
+            s.contains("middlewares:\n        - sds-shop-token\n        - sds-shop\n        - sds-shop-strip-token"),
+            "token must be set before auth and removed afterwards"
+        );
+    }
+
+    #[test]
+    fn nginx_sends_the_token_to_the_protected_waiting_page_too() {
+        let s = render(ProxyKind::Nginx, &input());
+        assert_eq!(s.matches("proxy_set_header X-SDS-Token").count(), 2);
+    }
+
+    #[test]
     fn parses_kind() {
         assert_eq!("Nginx".parse::<ProxyKind>(), Ok(ProxyKind::Nginx));
         assert!("haproxy".parse::<ProxyKind>().is_err());
