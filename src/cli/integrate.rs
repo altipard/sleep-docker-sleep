@@ -28,11 +28,7 @@ pub struct IntegrateArgs {
 
 pub fn integrate(explicit: Option<&Path>, args: IntegrateArgs) -> Result<()> {
     let cfg = config::load(explicit).map(|(c, _)| c).unwrap_or_default();
-    let sds_url = args.sds_url.unwrap_or_else(|| {
-        let bind = cfg.admin.bind;
-        let host = if bind.ip().is_unspecified() { "127.0.0.1".to_owned() } else { bind.ip().to_string() };
-        format!("http://{host}:{}", bind.port())
-    });
+    let sds_url = args.sds_url.unwrap_or_else(|| super::client::admin_url(cfg.admin.bind));
     let hold = args.hold_timeout.unwrap_or_else(|| {
         cfg.groups
             .get(&args.group)
