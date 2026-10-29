@@ -710,6 +710,9 @@ pub(super) mod tests {
         /// When set, `inspect` fails with `Unreachable` (simulates a daemon hiccup).
         pub fail_inspect: Mutex<Option<String>>,
         pub fail_stop: Mutex<Option<String>>,
+        pub hang_start: bool,
+        pub hang_stop: bool,
+        pub hang_inspect: bool,
         pub start_calls: Mutex<Vec<String>>,
         pub stop_calls: Mutex<Vec<String>>,
         pub events: Mutex<Option<broadcast::Sender<ContainerEvent>>>,
@@ -760,6 +763,9 @@ pub(super) mod tests {
             Ok(self.containers.lock().unwrap().values().cloned().collect())
         }
         async fn inspect(&self, id: &str) -> Result<ContainerInfo, BackendError> {
+            if self.hang_inspect {
+                std::future::pending().await
+            }
             if let Some(msg) = self.fail_inspect.lock().unwrap().clone() {
                 return Err(BackendError::Unreachable(msg));
             }
@@ -767,6 +773,9 @@ pub(super) mod tests {
         }
         async fn start(&self, id: &str) -> Result<(), BackendError> {
             self.start_calls.lock().unwrap().push(id.to_owned());
+            if self.hang_start {
+                std::future::pending().await
+            }
             if let Some(msg) = self.fail_start.lock().unwrap().clone() {
                 return Err(BackendError::Other(msg));
             }
@@ -778,6 +787,9 @@ pub(super) mod tests {
         }
         async fn stop(&self, id: &str, _timeout: Duration) -> Result<(), BackendError> {
             self.stop_calls.lock().unwrap().push(id.to_owned());
+            if self.hang_stop {
+                std::future::pending().await
+            }
             if let Some(msg) = self.fail_stop.lock().unwrap().clone() {
                 return Err(BackendError::Other(msg));
             }
@@ -852,6 +864,53 @@ pub(super) mod tests {
         let backend: Arc<dyn Backend> = backend;
         let link = spawn(spec, backend, Arc::clone(&bus), ev_rx, reqwest::Client::new(), FAST_TIMING, false);
         (link, bus, ev_tx)
+    }
+
+    #[tokio::test]
+    async fn start_timeout_bounds_a_hanging_docker_start() {
+        let mut backend = MockBackend::default();
+        backend.add("app", false);
+        backend.hang_start = true;
+        let backend: Arc<dyn Backend> = Arc::new(backend);
+        let settings = GroupSettings { start_timeout: Duration::from_millis(50), ..fast_settings() };
+        let members = spec(&["app"], settings.clone()).members;
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            start_group(backend, members, settings, reqwest::Client::new()),
+        )
+        .await
+        .expect("docker start escaped start_timeout");
+        assert!(matches!(result, Transition::StartFailed(reason) if reason.contains("not ready after")));
+    }
+
+    #[tokio::test]
+    async fn start_timeout_bounds_a_hanging_health_inspect() {
+        let mut backend = MockBackend::default();
+        backend.add("app", false);
+        backend.hang_inspect = true;
+        let backend: Arc<dyn Backend> = Arc::new(backend);
+        let settings = GroupSettings { start_timeout: Duration::from_millis(50), ..fast_settings() };
+        let members = spec(&["app"], settings.clone()).members;
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            start_group(backend, members, settings, reqwest::Client::new()),
+        )
+        .await
+        .expect("health inspect escaped start_timeout");
+        assert!(matches!(result, Transition::StartFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn stop_has_a_network_deadline_beyond_the_container_grace_period() {
+        let mut backend = MockBackend::default();
+        backend.add("app", true);
+        backend.hang_stop = true;
+        let backend: Arc<dyn Backend> = Arc::new(backend);
+        let members = spec(&["app"], fast_settings()).members;
+        let result = tokio::time::timeout(Duration::from_secs(1), stop_group(backend, members, Duration::ZERO))
+            .await
+            .expect("docker stop escaped its network deadline");
+        assert!(matches!(result, Transition::StopFailed(reason) if reason.contains("timed out")));
     }
 
     #[tokio::test]
