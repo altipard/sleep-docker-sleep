@@ -65,6 +65,8 @@ pub fn router(state: SharedState) -> Router {
         .route("/", get(web::index))
         .route("/logo.svg", get(web::logo))
         .route("/docs", get(web::docs))
+        .route("/swagger-ui.css", get(web::swagger_css))
+        .route("/swagger-ui-bundle.js", get(web::swagger_js))
         .route("/openapi.json", get(web::openapi))
         .route("/healthz", get(|| async { "ok" }))
         .merge(protected)
