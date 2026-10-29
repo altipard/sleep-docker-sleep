@@ -87,7 +87,7 @@ sudo install -m 755 sds /usr/local/bin/sds
 `sds update` performs this signature verification automatically before executing or
 installing a downloaded binary, and keeps the previous binary as `sds.previous`.
 
-**Cargo** (Rust 1.85+):
+**Cargo** (Rust 1.88+):
 
 ```bash
 cargo install --git https://github.com/altipard/sleep-docker-sleep --locked
@@ -253,10 +253,11 @@ consolidated overview across several hosts, are in the [Roadmap](docs/handbook/r
 ```bash
 just            # lint, coverage, dependency audit, build
 just smoke      # end-to-end check against real Docker, including auth
+just smoke-traefik # real Traefik auth, wake and token-stripping contract
 just docs-serve # handbook with live reload (mdBook)
 ```
 
-Rust 1.85+ and [just](https://just.systems) are the only tools needed. Examples for host
+Rust 1.88+ and [just](https://just.systems) are the only tools needed. Examples for host
 nginx and Caddy, project and central Traefik, the native proxy and the demo stack live
 under [`examples/`](examples/README.md). Commits follow Conventional Commits. Work lands on
 `develop`; merging `develop` into `main` cuts the release automatically.

@@ -232,7 +232,7 @@ impl GroupActor {
                 _ = tick.tick() => {
                     ticks = ticks.wrapping_add(1);
                     self.check_idle();
-                    if ticks % self.timing.reconcile_every_ticks == 0 && self.transition.is_none() {
+                    if ticks.is_multiple_of(self.timing.reconcile_every_ticks) && self.transition.is_none() {
                         self.reconcile().await;
                     }
                 }
@@ -705,10 +705,7 @@ async fn stop_group(backend: Arc<dyn Backend>, members: Vec<MemberSpec>, timeout
         async move {
             match tokio::time::timeout(request_timeout, backend.stop(&m.id, timeout)).await {
                 Ok(result) => result.map_err(|e| format!("docker stop `{}`: {e}", m.name)),
-                Err(_) => Err(format!(
-                    "docker stop `{}`: timed out after {:?}",
-                    m.name, request_timeout
-                )),
+                Err(_) => Err(format!("docker stop `{}`: timed out after {:?}", m.name, request_timeout)),
             }
         }
     }))

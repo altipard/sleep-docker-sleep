@@ -45,9 +45,10 @@ it as `X-SDS-Token`.
 ## Timeouts
 
 With `wake = hold`, `sds` holds the check request for up to `hold_timeout` (default 60 s).
-The proxy must not abort this connection earlier. The snippets set the respective read
-timeout to `hold_timeout + 5 s`. Whoever raises `hold_timeout` must raise the proxy value
-too; `sds integrate --hold-timeout <sec>` generates the snippet accordingly.
+The proxy must not abort this connection earlier. The nginx and Caddy snippets set the
+respective read timeout to `hold_timeout + 5 s`; `sds integrate --hold-timeout <sec>`
+overrides it. Traefik has no per-middleware `forwardAuthTimeout`; configure its global
+`serversTransport.forwardingTimeouts` when your deployment needs a bound.
 
 ## nginx
 
@@ -102,8 +103,8 @@ The snippet contains the variant as a dynamic file and as container labels.
 - **No fail-open:** Traefik has no bypass for `forwardAuth`. If `sds` is unreachable,
   Traefik answers `500`. Therefore run `sds` as a supervised service (`Restart=always`); a
   restart takes under a second.
-- `forwardAuthTimeout` (Traefik ≥ 3.3) must exceed `hold_timeout`. Older versions use the
-  global `serversTransport` timeout.
+- Traefik has no per-middleware forward-auth timeout field. If a deployment needs one,
+  configure the global `serversTransport.forwardingTimeouts` to exceed `hold_timeout`.
 - Token: the generated middleware chain sets `X-SDS-Token`, forwards it only to the
   auth service, and removes it again before the request reaches the application. Tokens
   are never placed in the forward-auth URL.

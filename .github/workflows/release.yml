@@ -79,8 +79,6 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
-      - name: stamp version
-        run: sed -i.bak "s/^version = \".*\"/version = \"${{ needs.version.outputs.version }}\"/" Cargo.toml && rm Cargo.toml.bak
       - run: cargo build --locked --release --target ${{ matrix.target }}
         env:
           SDS_VERSION: ${{ needs.version.outputs.version }}

@@ -29,6 +29,9 @@ mod page;
 pub use page::{OutcomeText, page_for_outcome};
 mod web;
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 use std::time::Instant;
 

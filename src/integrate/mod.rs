@@ -197,7 +197,7 @@ fn traefik(i: &SnippetInput) -> String {
 # Traefik's forwardAuth returns a non-2xx answer from sds to the client unchanged, so the
 # waiting page (503 + Refresh) is served directly. Note: Traefik has no fail-open for
 # forwardAuth; if sds is unreachable the client sees a 500. Run sds as a supervised
-# service (systemd/launchd) and keep the middleware's timeout generous.
+# service (systemd/launchd) and configure global forwarding timeouts when needed.
 # With a token, the first headers middleware adds it, forwardAuth copies it to sds, and
 # the final headers middleware removes it before the request reaches the application.
 
@@ -210,8 +210,6 @@ http:
 {auth_request_headers}        # only these response headers are copied; keep it minimal
         authResponseHeaders:
           - X-SDS-State
-        # must exceed the group's hold_timeout when wake = hold (Traefik >= 3.3)
-        forwardAuthTimeout: {hold}s
 
   routers:
     {group}:
@@ -237,14 +235,14 @@ http:
 #     sds.group: "{group}"
 "#,
         group = i.group,
-        hold = i.hold_timeout_secs + 5,
         host = i.host,
         upstream = i.upstream,
         sds_url = i.sds_url.trim_end_matches('/'),
         token_middlewares = token_middlewares,
         auth_request_headers = auth_request_headers,
         router_middlewares = router_middlewares,
-        label_middlewares = router_middlewares.lines().map(|line| line.trim().trim_start_matches("- ")).collect::<Vec<_>>().join(","),
+        label_middlewares =
+            router_middlewares.lines().map(|line| line.trim().trim_start_matches("- ")).collect::<Vec<_>>().join(","),
         label_token = label_token,
     )
 }
@@ -298,6 +296,7 @@ mod tests {
             s.contains("middlewares:\n        - sds-shop-token\n        - sds-shop\n        - sds-shop-strip-token"),
             "token must be set before auth and removed afterwards"
         );
+        assert!(!s.contains("forwardAuthTimeout"), "not a valid Traefik middleware field");
     }
 
     #[test]

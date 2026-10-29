@@ -23,7 +23,7 @@ openssl pkeyutl -verify -rawin -pubin -inkey sds-release-public-key.pem -in sds 
 sudo install -m 755 sds /usr/local/bin/sds
 ```
 
-Or build from source (Rust 1.85+):
+Or build from source (Rust 1.88+):
 
 ```bash
 cargo install --git https://github.com/altipard/sleep-docker-sleep --locked
