@@ -1,5 +1,6 @@
 //! HTTP client for the admin API, used by `status`, `wake`, `sleep`, `hold` and `release`.
 
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -9,6 +10,13 @@ use super::ClientArgs;
 use crate::admin::api::StatusResponse;
 use crate::config;
 use crate::controller::GroupSnapshot;
+
+/// Base URL of the admin API as seen from this host. A wildcard bind is reached via
+/// loopback; formatting through `SocketAddr` puts IPv6 literals in brackets.
+pub(super) fn admin_url(bind: SocketAddr) -> String {
+    let ip = if bind.ip().is_unspecified() { Ipv4Addr::LOCALHOST.into() } else { bind.ip() };
+    format!("http://{}", SocketAddr::new(ip, bind.port()))
+}
 
 pub struct ApiClient {
     base: String,
@@ -23,9 +31,7 @@ impl ApiClient {
         let base = match &args.url {
             Some(u) => u.trim_end_matches('/').to_owned(),
             None => {
-                let bind = cfg.as_ref().map(|c| c.admin.bind).unwrap_or_else(|| config::Config::default().admin.bind);
-                let host = if bind.ip().is_unspecified() { "127.0.0.1".to_owned() } else { bind.ip().to_string() };
-                format!("http://{host}:{}", bind.port())
+                admin_url(cfg.as_ref().map(|c| c.admin.bind).unwrap_or_else(|| config::Config::default().admin.bind))
             }
         };
         let token = args.token.clone().or_else(|| cfg.and_then(|c| c.admin.token));
@@ -90,5 +96,19 @@ impl ApiClient {
             return Ok(None);
         }
         Ok(Some(resp.error_for_status()?.json().await?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::admin_url;
+
+    #[test]
+    fn admin_url_brackets_ipv6() {
+        assert_eq!(admin_url("127.0.0.1:9900".parse().unwrap()), "http://127.0.0.1:9900");
+        assert_eq!(admin_url("0.0.0.0:9900".parse().unwrap()), "http://127.0.0.1:9900");
+        assert_eq!(admin_url("[::1]:9900".parse().unwrap()), "http://[::1]:9900");
+        assert_eq!(admin_url("[::]:9900".parse().unwrap()), "http://127.0.0.1:9900");
+        assert_eq!(admin_url("[fd00::5]:9900".parse().unwrap()), "http://[fd00::5]:9900");
     }
 }
