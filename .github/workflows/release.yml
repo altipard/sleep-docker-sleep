@@ -115,6 +115,21 @@ jobs:
           path: dist
           pattern: sds-*
           merge-multiple: true
+      - name: sign release binaries
+        env:
+          SDS_SIGNING_PRIVATE_KEY: ${{ secrets.SDS_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SDS_SIGNING_PRIVATE_KEY" ]; then
+            echo "SDS_SIGNING_PRIVATE_KEY is required; refusing to publish unsigned binaries"
+            exit 1
+          fi
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$SDS_SIGNING_PRIVATE_KEY" > "$key"
+          chmod 600 "$key"
+          for file in dist/sds-*; do
+            openssl pkeyutl -sign -rawin -inkey "$key" -in "$file" -out "$file.sig"
+          done
       - name: tag and release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
