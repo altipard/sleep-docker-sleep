@@ -176,4 +176,15 @@ mod tests {
         assert!(html.contains("src=\"data:image/svg+xml,"));
         assert!(!LOGO_DATA_URL.contains('"') && !LOGO_DATA_URL.contains('#') && !LOGO_DATA_URL.contains('<'));
     }
+
+    #[test]
+    fn public_failure_pages_do_not_expose_docker_errors() {
+        let secret = "docker start `db-internal`: connection details";
+        let html = OutcomeText::of(&WakeOutcome::Failed(secret.into()))
+            .page("shop", StatusCode::SERVICE_UNAVAILABLE)
+            .html();
+        assert!(!html.contains("db-internal"));
+        assert!(!html.contains("connection details"));
+        assert!(html.contains("could not be started"));
+    }
 }
