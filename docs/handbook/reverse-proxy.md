@@ -13,7 +13,7 @@ possible.
 | Path | Purpose |
 |---|---|
 | `GET /_sds/check/<group>` | Forward-auth. `200` when the group is running. Otherwise it is woken; depending on `wake`, `sds` holds the request or answers with status `503` (or `?deny=…`) and the waiting page. |
-| `GET /_sds/wait/<group>` | Waiting page without auth semantics, for proxies that cannot relay the body of the check response (nginx). |
+| `GET /_sds/wait/<group>` | Waiting page for proxies that cannot relay the body of the check response (nginx); protected by the same token as the check endpoint. |
 
 Parameters for `/_sds/check`:
 
@@ -104,9 +104,9 @@ The snippet contains the variant as a dynamic file and as container labels.
   restart takes under a second.
 - `forwardAuthTimeout` (Traefik ≥ 3.3) must exceed `hold_timeout`. Older versions use the
   global `serversTransport` timeout.
-- Token: Traefik cannot attach fixed headers to the auth service. Either run `sds` without
-  a token on a private Docker network (recommended) or add the token with a `headers`
-  middleware in front.
+- Token: the generated middleware chain sets `X-SDS-Token`, forwards it only to the
+  auth service, and removes it again before the request reaches the application. Tokens
+  are never placed in the forward-auth URL.
 
 ## Verifying
 

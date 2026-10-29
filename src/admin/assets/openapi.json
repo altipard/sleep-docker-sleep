@@ -3,7 +3,7 @@
   "info": {
     "title": "sleep-docker-sleep admin API",
     "version": "0.0.0",
-    "description": "Control and observe the groups of a running `sds` daemon. With `admin.token` set, `/api/*` and `/_sds/check/*` require the token as `X-SDS-Token` or `Authorization: Bearer`.",
+    "description": "Control and observe the groups of a running `sds` daemon. With `admin.token` set, `/api/*`, `/_sds/check/*` and `/_sds/wait/*` require the token as `X-SDS-Token` or `Authorization: Bearer`.",
     "license": { "name": "MIT" }
   },
   "servers": [{ "url": "/" }],
@@ -166,7 +166,7 @@
         "tags": ["reverse proxy"],
         "operationId": "waitPage",
         "summary": "Waiting page",
-        "description": "For proxies that cannot relay the check response body (nginx `error_page`). Wakes the group; needs no token.",
+        "description": "For proxies that cannot relay the check response body (nginx `error_page`). Wakes the group; requires the same token as the check endpoint when configured.",
         "security": [],
         "responses": {
           "200": { "description": "Running; the page reloads to the site", "content": { "text/html": { "schema": { "type": "string" } } } },
