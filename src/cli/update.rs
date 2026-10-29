@@ -4,10 +4,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
+use ed25519_dalek::{Signature, VerifyingKey};
 use owo_colors::OwoColorize;
 use serde::Deserialize;
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
+/// Ed25519 public key for release artifacts. The private key exists only in the release
+/// secret store; rotating it requires a signed release carrying a new key.
+const RELEASE_PUBLIC_KEY_HEX: &str = "5297e732ee13fee1a13dd124df22f63a6635afa0cc05c700185a5dc970ec556f";
+const MAX_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Args)]
 pub struct UpdateArgs {
@@ -71,19 +76,57 @@ pub async fn update(args: UpdateArgs) -> Result<()> {
         .find(|a| a.name == asset_name)
         .with_context(|| format!("release {latest} has no binary `{asset_name}` for this platform"))?;
     let target = std::env::current_exe().and_then(std::fs::canonicalize).context("locate the running sds binary")?;
-    let bytes = http
-        .get(&asset.browser_download_url)
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .with_context(|| format!("download {}", asset.browser_download_url))?
-        .bytes()
-        .await?;
+    let signature_name = format!("{asset_name}.sig");
+    let signature_asset = release
+        .assets
+        .iter()
+        .find(|a| a.name == signature_name)
+        .with_context(|| format!("release {latest} has no signature `{signature_name}`; refusing an unsigned update"))?;
+    let bytes = download(&http, &asset.browser_download_url).await?;
+    let signature = download(&http, &signature_asset.browser_download_url).await?;
+    verify_release(&bytes, &signature, RELEASE_PUBLIC_KEY_HEX)?;
     install(&target, &bytes, latest)?;
     println!("{} installed sds {latest} at {}", "ok".green().bold(), target.display());
+    println!("previous binary kept at {} for rollback", backup_path(&target).display());
     println!("restart the daemon to use it, e.g. `sudo systemctl restart sds` or");
     println!("`sudo launchctl kickstart -k system/com.zilicon.sds`");
     Ok(())
+}
+
+async fn download(http: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
+    let mut response = http
+        .get(url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .with_context(|| format!("download {url}"))?;
+    if response.content_length().is_some_and(|size| size > MAX_DOWNLOAD_BYTES as u64) {
+        bail!("download exceeds the {} MiB limit", MAX_DOWNLOAD_BYTES / 1024 / 1024);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.with_context(|| format!("read download {url}"))? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_DOWNLOAD_BYTES {
+            bail!("download exceeds the {} MiB limit", MAX_DOWNLOAD_BYTES / 1024 / 1024);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn verify_release(bytes: &[u8], signature: &[u8], public_key_hex: &str) -> Result<()> {
+    let public_key_bytes: [u8; 32] = hex::decode(public_key_hex)
+        .context("decode release public key")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("release public key must contain 32 bytes"))?;
+    let public_key = VerifyingKey::from_bytes(&public_key_bytes).context("invalid release public key")?;
+    let signature = Signature::from_slice(signature).context("release signature must contain 64 bytes")?;
+    public_key.verify_strict(bytes, &signature).context("release signature verification failed; refusing update")?;
+    Ok(())
+}
+
+fn backup_path(target: &Path) -> PathBuf {
+    let name = target.file_name().map(|n| n.to_string_lossy()).unwrap_or_else(|| "sds".into());
+    target.with_file_name(format!("{name}.previous"))
 }
 
 async fn fetch_release(http: &reqwest::Client, version: Option<&str>) -> Result<Release> {
@@ -132,6 +175,9 @@ fn install(target: &Path, bytes: &[u8], version: &str) -> Result<()> {
         if !out.status.success() || !reported.contains(version) {
             bail!("downloaded binary does not report version {version} (got `{}`)", reported.trim());
         }
+        let backup = backup_path(target);
+        std::fs::copy(target, &backup)
+            .with_context(|| format!("keep previous binary at {} for rollback", backup.display()))?;
         std::fs::rename(&tmp, target).map_err(|e| permission_hint(e, dir))?;
         Ok(())
     })();
@@ -219,5 +265,14 @@ mod tests {
         assert!(workflow.contains("SDS_SIGNING_PRIVATE_KEY"));
         assert!(workflow.contains("pkeyutl -sign -rawin"));
         assert!(workflow.contains("$file.sig"));
+    }
+
+    #[test]
+    fn openssl_release_signatures_match_the_embedded_public_key() {
+        let signature = hex::decode(
+            "a271429e97f991090ba05efebe5b444f7a57afa5d26a6bd5ad02e0ce90adc00cd06b6df501da9065c6bc7742937c1c5a3790c1dce08e859024f1331c04d56a0f",
+        )
+        .unwrap();
+        verify_release(b"sds-release-key-check", &signature, RELEASE_PUBLIC_KEY_HEX).unwrap();
     }
 }
