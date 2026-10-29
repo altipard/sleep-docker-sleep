@@ -109,7 +109,12 @@ impl OutcomeText {
                 "starting",
                 5,
             ),
-            WakeOutcome::Failed(r) => ("Start failed", format!("{r} — sds retries shortly."), "failed", 10),
+            WakeOutcome::Failed(_) => (
+                "Start failed",
+                "The service could not be started. sds retries shortly.".to_owned(),
+                "failed",
+                10,
+            ),
             WakeOutcome::Overloaded => (
                 "Busy",
                 "Too many requests are waiting for this service to start. Please retry in a moment.".to_owned(),

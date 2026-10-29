@@ -107,7 +107,7 @@ server {{
     location @sds_wait {{
         proxy_pass {sds_url}/_sds/wait/{group};
         proxy_set_header Accept "text/html";
-        proxy_intercept_errors off;
+{token_line}        proxy_intercept_errors off;
     }}
 
     location @sds_bypass {{
@@ -165,39 +165,59 @@ fn caddy(i: &SnippetInput) -> String {
 }
 
 fn traefik(i: &SnippetInput) -> String {
-    let token_block = i
+    let token_middlewares = i
         .token
         .as_ref()
-        .map(|t| format!("          authRequestHeaders: []\n          # the token travels in the address, Traefik does not add headers here\n          # alternatively run sds without a token on a private network\n          address: \"{}/_sds/check/{}?token={t}\"\n", i.sds_url.trim_end_matches('/'), i.group))
+        .map(|t| {
+            format!(
+                "    sds-{group}-token:\n      headers:\n        customRequestHeaders:\n          X-SDS-Token: \"{t}\"\n    sds-{group}-strip-token:\n      headers:\n        customRequestHeaders:\n          X-SDS-Token: \"\"\n",
+                group = i.group
+            )
+        })
         .unwrap_or_default();
-    let address_line = if i.token.is_some() {
-        token_block
+    let auth_request_headers =
+        if i.token.is_some() { "        authRequestHeaders:\n          - X-SDS-Token\n" } else { "" };
+    let router_middlewares = if i.token.is_some() {
+        format!("        - sds-{0}-token\n        - sds-{0}\n        - sds-{0}-strip-token", i.group)
     } else {
-        format!("          address: \"{}/_sds/check/{}\"\n", i.sds_url.trim_end_matches('/'), i.group)
+        format!("        - sds-{}", i.group)
     };
+    let label_token = i
+        .token
+        .as_ref()
+        .map(|t| {
+            format!(
+                "#     traefik.http.middlewares.sds-{group}-token.headers.customrequestheaders.X-SDS-Token: \"{t}\"\n#     traefik.http.middlewares.sds-{group}-strip-token.headers.customrequestheaders.X-SDS-Token: \"\"\n#     traefik.http.middlewares.sds-{group}.forwardauth.authrequestheaders: \"X-SDS-Token\"\n",
+                group = i.group
+            )
+        })
+        .unwrap_or_default();
     format!(
         r#"# sleep-docker-sleep: forward-auth integration for group "{group}"
 # Traefik's forwardAuth returns a non-2xx answer from sds to the client unchanged, so the
 # waiting page (503 + Refresh) is served directly. Note: Traefik has no fail-open for
 # forwardAuth; if sds is unreachable the client sees a 500. Run sds as a supervised
 # service (systemd/launchd) and keep the middleware's timeout generous.
+# With a token, the first headers middleware adds it, forwardAuth copies it to sds, and
+# the final headers middleware removes it before the request reaches the application.
 
 # --- dynamic configuration (file provider) ------------------------------------------
 http:
   middlewares:
-    sds-{group}:
+{token_middlewares}    sds-{group}:
       forwardAuth:
-{address_line}          # only these headers are forwarded to sds; keep it minimal
-          authResponseHeaders:
-            - X-SDS-State
-          # must exceed the group's hold_timeout when wake = hold (Traefik >= 3.3)
-          forwardAuthTimeout: {hold}s
+        address: "{sds_url}/_sds/check/{group}"
+{auth_request_headers}        # only these response headers are copied; keep it minimal
+        authResponseHeaders:
+          - X-SDS-State
+        # must exceed the group's hold_timeout when wake = hold (Traefik >= 3.3)
+        forwardAuthTimeout: {hold}s
 
   routers:
     {group}:
       rule: "Host(`{host}`)"
       middlewares:
-        - sds-{group}
+{router_middlewares}
       service: {group}
 
   services:
@@ -210,18 +230,22 @@ http:
 #   labels:
 #     traefik.enable: "true"
 #     traefik.http.routers.{group}.rule: "Host(`{host}`)"
-#     traefik.http.routers.{group}.middlewares: "sds-{group}"
+#     traefik.http.routers.{group}.middlewares: "{label_middlewares}"
 #     traefik.http.middlewares.sds-{group}.forwardauth.address: "{sds_url}/_sds/check/{group}"
-#     traefik.http.middlewares.sds-{group}.forwardauth.authResponseHeaders: "X-SDS-State"
+{label_token}#     traefik.http.middlewares.sds-{group}.forwardauth.authResponseHeaders: "X-SDS-State"
 #     sds.enable: "true"
 #     sds.group: "{group}"
 "#,
         group = i.group,
-        address_line = address_line,
         hold = i.hold_timeout_secs + 5,
         host = i.host,
         upstream = i.upstream,
         sds_url = i.sds_url.trim_end_matches('/'),
+        token_middlewares = token_middlewares,
+        auth_request_headers = auth_request_headers,
+        router_middlewares = router_middlewares,
+        label_middlewares = router_middlewares.lines().map(|line| line.trim().trim_start_matches("- ")).collect::<Vec<_>>().join(","),
+        label_token = label_token,
     )
 }
 
@@ -265,7 +289,7 @@ mod tests {
         let s = render(ProxyKind::Traefik, &input());
         assert!(!s.contains("?token="), "secrets must not be placed in URLs");
         assert!(s.contains("address: \"http://127.0.0.1:9900/_sds/check/shop\""));
-        assert!(s.contains("authRequestHeaders:\n            - X-SDS-Token"));
+        assert!(s.contains("authRequestHeaders:\n          - X-SDS-Token"));
         assert!(s.contains("sds-shop-token:"));
         assert!(s.contains("sds-shop-strip-token:"));
         assert!(s.contains("X-SDS-Token: \"t0k\""));

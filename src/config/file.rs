@@ -32,7 +32,7 @@ pub struct AdminConfig {
     /// Where the admin API, forward-auth endpoint and web overview listen.
     pub bind: SocketAddr,
     /// Optional bearer token required for `/api/*` and `/_sds/check/*`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "redact_token")]
     pub token: Option<String>,
     /// Public base URL of the waiting page as seen by browsers; only needed when the
     /// reverse proxy cannot serve `/_sds/wait/*` from the same origin.
@@ -51,6 +51,13 @@ impl Default for AdminConfig {
             unknown_group: UnknownGroupPolicy::Allow,
         }
     }
+}
+
+fn redact_token<S>(_token: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str("<redacted>")
 }
 
 /// Forward-auth behaviour for unknown groups. `sds` gates wake-ups, it is not an
