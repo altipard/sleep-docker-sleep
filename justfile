@@ -33,7 +33,7 @@ test:
 
 # Line coverage with an LCOV report in target/coverage/lcov.info
 coverage:
-    cargo llvm-cov --version >/dev/null 2>&1 || cargo install cargo-llvm-cov --locked
+    cargo llvm-cov --version >/dev/null 2>&1 || cargo install cargo-llvm-cov@0.9.1 --locked
     mkdir -p target/coverage
     cargo llvm-cov --locked --all-features --workspace --ignore-filename-regex 'src/test_support.rs' --fail-under-lines 80 --lcov --output-path target/coverage/lcov.info
 
@@ -48,7 +48,7 @@ fmt:
 
 # Dependency vulnerability audit (installs cargo-audit on demand)
 audit:
-    cargo audit --version >/dev/null 2>&1 || cargo install cargo-audit --locked
+    cargo audit --version >/dev/null 2>&1 || cargo install cargo-audit@0.22.2 --locked
     cargo audit
 
 # Check commit messages on this branch against Conventional Commits
