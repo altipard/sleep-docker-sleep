@@ -42,6 +42,12 @@ const PROBE_INTERVAL: Duration = Duration::from_millis(500);
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Extra time granted to a running `docker stop` when the actor is shut down.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// Network/API budget after Docker's own stop grace period. Short in tests to keep the
+/// hanging-backend regression fast.
+#[cfg(not(test))]
+const DOCKER_NETWORK_GRACE: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const DOCKER_NETWORK_GRACE: Duration = Duration::from_millis(50);
 
 /// Loop timing; the defaults are production values, tests shorten them.
 #[derive(Debug, Clone, Copy)]
@@ -652,6 +658,22 @@ async fn start_group(
     settings: GroupSettings,
     http: reqwest::Client,
 ) -> Transition {
+    let timeout = settings.start_timeout;
+    match tokio::time::timeout(timeout, start_group_inner(backend, members, settings, http)).await {
+        Ok(transition) => transition,
+        Err(_) => Transition::StartFailed(format!(
+            "not ready after {}: Docker operation or health check exceeded the deadline",
+            humantime::format_duration(timeout)
+        )),
+    }
+}
+
+async fn start_group_inner(
+    backend: Arc<dyn Backend>,
+    members: Vec<MemberSpec>,
+    settings: GroupSettings,
+    http: reqwest::Client,
+) -> Transition {
     for m in &members {
         if let Err(e) = backend.start(&m.id).await {
             return Transition::StartFailed(format!("docker start `{}`: {e}", m.name));
@@ -677,9 +699,18 @@ async fn start_group(
 }
 
 async fn stop_group(backend: Arc<dyn Backend>, members: Vec<MemberSpec>, timeout: Duration) -> Transition {
+    let request_timeout = timeout.saturating_add(DOCKER_NETWORK_GRACE);
     let results = futures_util::future::join_all(members.iter().map(|m| {
         let backend = Arc::clone(&backend);
-        async move { backend.stop(&m.id, timeout).await.map_err(|e| format!("docker stop `{}`: {e}", m.name)) }
+        async move {
+            match tokio::time::timeout(request_timeout, backend.stop(&m.id, timeout)).await {
+                Ok(result) => result.map_err(|e| format!("docker stop `{}`: {e}", m.name)),
+                Err(_) => Err(format!(
+                    "docker stop `{}`: timed out after {:?}",
+                    m.name, request_timeout
+                )),
+            }
+        }
     }))
     .await;
     let errors: Vec<String> = results.into_iter().filter_map(Result::err).collect();
