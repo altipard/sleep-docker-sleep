@@ -12,7 +12,7 @@ production a file is still recommended, at least for the token and logging.
 5. `/etc/sds/sds.toml`
 
 `sds config --path` shows which file is used; `sds config` prints the effective
-configuration. `sds init` writes a commented template.
+configuration with the admin token redacted. `sds init` writes a commented template.
 
 Unknown keys are errors so that typos are not silently ignored. All durations use the
 `humantime` notation: `30s`, `15m`, `2h`, `1h 30m`.
@@ -34,7 +34,7 @@ container wins; `sds check` and the web overview show a warning.
 ```toml
 [admin]
 bind = "127.0.0.1:9900"      # admin API, forward-auth endpoint and web overview
-# token = "…"                 # required as soon as bind is not loopback (sds warns otherwise)
+# token = "…"                 # required as soon as bind is not loopback (startup fails otherwise)
 # public_url = "https://…"    # only if the waiting page is served from another origin
 # unknown_group = "allow"     # what /_sds/check answers for unknown groups: allow | deny
 
@@ -72,8 +72,8 @@ mode = "http"                # http | tcp
 
 | Field | Default | Meaning |
 |---|---|---|
-| `bind` | `127.0.0.1:9900` | Address of the admin server. For proxies in containers `0.0.0.0:9900` plus a token or a private network. |
-| `token` | empty | When set, `/api/*` and `/_sds/check/*` require the header `X-SDS-Token` or `Authorization: Bearer`. The snippets from `sds integrate` include it. The web overview asks for it on first use. |
+| `bind` | `127.0.0.1:9900` | Address of the admin server. For proxies in containers `0.0.0.0:9900` plus a token; `run --insecure` explicitly allows a trusted private network without one. |
+| `token` | empty | When set, `/api/*`, `/_sds/check/*` and `/_sds/wait/*` require the header `X-SDS-Token` or `Authorization: Bearer`. The snippets from `sds integrate` include it. The web overview asks for it on first use and keeps it only for the current browser tab. |
 | `public_url` | empty | Reserved for setups where the waiting page lives under a different address. |
 
 The admin server speaks plain HTTP. TLS belongs in a reverse proxy in front of it if the

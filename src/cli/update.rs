@@ -77,11 +77,9 @@ pub async fn update(args: UpdateArgs) -> Result<()> {
         .with_context(|| format!("release {latest} has no binary `{asset_name}` for this platform"))?;
     let target = std::env::current_exe().and_then(std::fs::canonicalize).context("locate the running sds binary")?;
     let signature_name = format!("{asset_name}.sig");
-    let signature_asset = release
-        .assets
-        .iter()
-        .find(|a| a.name == signature_name)
-        .with_context(|| format!("release {latest} has no signature `{signature_name}`; refusing an unsigned update"))?;
+    let signature_asset = release.assets.iter().find(|a| a.name == signature_name).with_context(|| {
+        format!("release {latest} has no signature `{signature_name}`; refusing an unsigned update")
+    })?;
     let bytes = download(&http, &asset.browser_download_url).await?;
     let signature = download(&http, &signature_asset.browser_download_url).await?;
     verify_release(&bytes, &signature, RELEASE_PUBLIC_KEY_HEX)?;
@@ -256,7 +254,7 @@ mod tests {
         let signature = signing.sign(binary).to_bytes().to_vec();
         verify_release(binary, &signature, &public).unwrap();
         assert!(verify_release(b"tampered", &signature, &public).is_err());
-        assert!(verify_release(binary, &signature, &RELEASE_PUBLIC_KEY_HEX).is_err());
+        assert!(verify_release(binary, &signature, RELEASE_PUBLIC_KEY_HEX).is_err());
     }
 
     #[test]

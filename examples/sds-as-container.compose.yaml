@@ -6,7 +6,9 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./sds.toml:/etc/sds/sds.toml:ro      # admin.bind must be "0.0.0.0:9900" here
+      - ./sds.toml:/etc/sds/sds.toml:ro      # admin.bind must be "0.0.0.0:9900" and admin.token set
+    # For a dedicated trusted private network without a token, explicitly use:
+    # command: ["run", "--headless", "--insecure"]
     networks:
       - proxy
     labels:
