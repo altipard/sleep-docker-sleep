@@ -114,13 +114,12 @@ pub async fn run(explicit: Option<&Path>, args: RunArgs) -> Result<()> {
         // The registry waits for running `docker stop`s; give it its full budget plus slack.
         let _ = tokio::time::timeout(std::time::Duration::from_secs(40), task).await;
     }
-    if let Some(task) = admin_task.take() {
-        if let Ok(Ok(Err(e))) = tokio::time::timeout(std::time::Duration::from_secs(5), task).await {
-            if result.is_ok() {
-                signal_task.abort();
-                return Err(e);
-            }
-        }
+    if let Some(task) = admin_task.take()
+        && let Ok(Ok(Err(e))) = tokio::time::timeout(std::time::Duration::from_secs(5), task).await
+        && result.is_ok()
+    {
+        signal_task.abort();
+        return Err(e);
     }
     signal_task.abort();
     result

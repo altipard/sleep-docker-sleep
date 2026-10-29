@@ -35,7 +35,7 @@ test:
 coverage:
     cargo llvm-cov --version >/dev/null 2>&1 || cargo install cargo-llvm-cov --locked
     mkdir -p target/coverage
-    cargo llvm-cov --locked --all-features --workspace --lcov --output-path target/coverage/lcov.info
+    cargo llvm-cov --locked --all-features --workspace --ignore-filename-regex 'src/test_support.rs' --fail-under-lines 80 --lcov --output-path target/coverage/lcov.info
 
 # Format check and clippy with warnings as errors
 lint:
@@ -129,6 +129,10 @@ smoke: build
     echo "waiting for idle stop (20s)…"; sleep 25
     test "$(docker inspect -f '{{{{.State.Status}}' {{smoke_name}})" = exited
     echo "smoke test passed"
+
+# End-to-end check of the generated Traefik config, auth and token stripping
+smoke-traefik: build
+    bash examples/traefik-central/smoke.sh
 
 # Remove build artefacts
 clean:

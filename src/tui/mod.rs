@@ -122,8 +122,10 @@ impl RemoteSource {
                             Action::Sleep => client.sleep(&group).await,
                             Action::Hold(held) => client.set_hold(&group, held).await,
                         };
-                        if let Err(e) = result {
-                            if let Ok(mut err) = error_bg.lock() { *err = Some(e.to_string()); }
+                        if let Err(e) = result
+                            && let Ok(mut err) = error_bg.lock()
+                        {
+                            *err = Some(e.to_string());
                         }
                     }
                 }
@@ -297,43 +299,43 @@ impl Dashboard {
             let groups = self.source.snapshots();
             let logs = self.source.logs();
             terminal.draw(|f| self.draw(f, &groups, &logs))?;
-            if event::poll(Duration::from_millis(500))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind != KeyEventKind::Press {
-                        continue;
+            if event::poll(Duration::from_millis(500))?
+                && let Event::Key(key) = event::read()?
+            {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                let selected = self.table.selected().and_then(|i| groups.get(i));
+                if self.confirm_quit {
+                    self.confirm_quit = false;
+                    if matches!(key.code, KeyCode::Char('q')) {
+                        return Ok(Exit::Quit);
                     }
-                    let selected = self.table.selected().and_then(|i| groups.get(i));
-                    if self.confirm_quit {
-                        self.confirm_quit = false;
-                        if matches!(key.code, KeyCode::Char('q')) {
-                            return Ok(Exit::Quit);
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc if self.source.supports_detach() => self.confirm_quit = true,
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(Exit::Quit),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(Exit::Quit),
+                    KeyCode::Char('x') | KeyCode::Char('d') => return Ok(Exit::Detach),
+                    KeyCode::Down | KeyCode::Char('j') => self.select(groups.len(), 1),
+                    KeyCode::Up | KeyCode::Char('k') => self.select(groups.len(), -1),
+                    KeyCode::Char('w') => {
+                        if let Some(g) = selected {
+                            self.source.wake(&g.name);
                         }
-                        continue;
                     }
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc if self.source.supports_detach() => self.confirm_quit = true,
-                        KeyCode::Char('q') | KeyCode::Esc => return Ok(Exit::Quit),
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(Exit::Quit),
-                        KeyCode::Char('x') | KeyCode::Char('d') => return Ok(Exit::Detach),
-                        KeyCode::Down | KeyCode::Char('j') => self.select(groups.len(), 1),
-                        KeyCode::Up | KeyCode::Char('k') => self.select(groups.len(), -1),
-                        KeyCode::Char('w') => {
-                            if let Some(g) = selected {
-                                self.source.wake(&g.name);
-                            }
+                    KeyCode::Char('s') => {
+                        if let Some(g) = selected {
+                            self.source.sleep(&g.name);
                         }
-                        KeyCode::Char('s') => {
-                            if let Some(g) = selected {
-                                self.source.sleep(&g.name);
-                            }
-                        }
-                        KeyCode::Char('h') => {
-                            if let Some(g) = selected {
-                                self.source.set_hold(&g.name, !g.held);
-                            }
-                        }
-                        _ => {}
                     }
+                    KeyCode::Char('h') => {
+                        if let Some(g) = selected {
+                            self.source.set_hold(&g.name, !g.held);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -464,7 +466,7 @@ impl Dashboard {
             .collect();
         let widths = [
             Constraint::Min(14),
-            Constraint::Length(9),
+            Constraint::Length(15),
             Constraint::Min(20),
             Constraint::Length(6),
             Constraint::Length(16),
@@ -513,6 +515,38 @@ fn draw_logs(f: &mut Frame, area: Rect, logs: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{GroupSettings, HealthSpec};
+    use crate::test_support;
+
+    struct FakeSource {
+        groups: Vec<GroupSnapshot>,
+        logs: Vec<String>,
+        problem: Option<String>,
+    }
+
+    impl Source for FakeSource {
+        fn snapshots(&self) -> Vec<GroupSnapshot> {
+            self.groups.clone()
+        }
+        fn logs(&self) -> Vec<String> {
+            self.logs.clone()
+        }
+        fn wake(&self, _group: &str) {}
+        fn sleep(&self, _group: &str) {}
+        fn set_hold(&self, _group: &str, _held: bool) {}
+        fn docker_endpoint(&self) -> String {
+            "mock://docker".into()
+        }
+        fn location(&self) -> String {
+            "test dashboard".into()
+        }
+        fn problem(&self) -> Option<String> {
+            self.problem.clone()
+        }
+        fn supports_detach(&self) -> bool {
+            true
+        }
+    }
 
     #[test]
     fn log_buffer_splits_lines_and_caps() {
@@ -521,5 +555,82 @@ mod tests {
         w.write_all(b"one\ntwo\nthr").unwrap();
         w.write_all(b"ee\n").unwrap();
         assert_eq!(buf.lines(), vec!["two".to_string(), "three".to_string()]);
+        w.flush().unwrap();
+        buf.detach();
+        w.write_all(b"four\n").unwrap();
+        assert_eq!(buf.lines().last().unwrap(), "four");
+    }
+
+    #[test]
+    fn dashboard_renders_group_states_logs_and_quit_confirmation() {
+        let mut running = test_support::snapshot("shop", StateKind::Running);
+        running.warnings.push("warning text".into());
+        running.last_error = Some("error text".into());
+        let mut held = test_support::snapshot("db", StateKind::Stopped);
+        held.held = true;
+        let groups = vec![
+            running,
+            held,
+            test_support::snapshot("starting", StateKind::Starting),
+            test_support::snapshot("stopping", StateKind::Stopping),
+            test_support::snapshot("failed", StateKind::Failed),
+        ];
+        let source = FakeSource {
+            groups: groups.clone(),
+            logs: vec![" INFO running".into(), " WARN failed".into()],
+            problem: Some("daemon unreachable".into()),
+        };
+        let mut dashboard = Dashboard::new(Box::new(source));
+        dashboard.select(groups.len(), 1);
+        dashboard.select(groups.len(), -2);
+        let backend = ratatui::backend::TestBackend::new(140, 35);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| dashboard.draw(frame, &groups, &[" INFO running".into(), " WARN failed".into()]))
+            .unwrap();
+        let content = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect::<String>();
+        assert!(content.contains("shop"));
+        assert!(content.contains("stopped (held)"));
+        assert!(content.contains("daemon unreachable"));
+        assert!(content.contains("warning text"));
+        assert!(content.contains("mock://docker"));
+
+        dashboard.confirm_quit = true;
+        terminal.draw(|frame| dashboard.draw(frame, &groups, &[])).unwrap();
+        let content = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect::<String>();
+        assert!(content.contains("press q again to STOP THE DAEMON"));
+    }
+
+    #[test]
+    fn dashboard_handles_empty_groups_and_selection() {
+        let source = FakeSource { groups: Vec::new(), logs: Vec::new(), problem: None };
+        let mut dashboard = Dashboard::new(Box::new(source));
+        dashboard.select(0, 1);
+        assert_eq!(dashboard.table.selected(), None);
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| dashboard.draw(frame, &[], &[])).unwrap();
+        let content = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect::<String>();
+        assert!(content.contains("no groups discovered yet"));
+    }
+
+    #[tokio::test]
+    async fn local_source_exposes_registry_and_operator_actions() {
+        let settings =
+            GroupSettings { start_grace: Duration::ZERO, health: HealthSpec::Grace, ..GroupSettings::default() };
+        let (registry, _backend) = test_support::registry("shop", &["app"], true, settings);
+        let source = LocalSource { registry, logs: LogBuffer::new(5), bind: "127.0.0.1:9900".parse().unwrap() };
+        assert_eq!(source.snapshots().len(), 1);
+        assert_eq!(source.docker_endpoint(), "mock://docker");
+        assert!(source.location().contains("9900"));
+        assert!(source.supports_detach());
+        assert!(source.problem().is_none());
+        source.wake("shop");
+        source.sleep("shop");
+        source.set_hold("shop", true);
+        source.set_hold("shop", false);
+        source.set_hold("missing", true);
+        assert!(source.logs().is_empty());
+        source.registry.shutdown().await;
     }
 }

@@ -164,10 +164,10 @@ pub fn candidates(explicit: Option<&Path>) -> Vec<PathBuf> {
         out.push(p.to_path_buf());
         return out;
     }
-    if let Ok(p) = std::env::var(ENV_VAR) {
-        if !p.is_empty() {
-            out.push(PathBuf::from(p));
-        }
+    if let Ok(p) = std::env::var(ENV_VAR)
+        && !p.is_empty()
+    {
+        out.push(PathBuf::from(p));
     }
     out.push(PathBuf::from(FILE_NAME));
     if let Some(dirs) = directories::ProjectDirs::from("", "", "sds") {

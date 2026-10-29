@@ -97,10 +97,13 @@ The version shown by `--version`, the web overview, the API and the dashboard co
 - Snippet generators and unit files are checked for the decisive lines, including the
   Traefik token-injection/stripping chain.
 - `cargo audit` checks the locked dependency graph against RustSec advisories.
-- `cargo llvm-cov` produces a line-coverage summary and `target/coverage/lcov.info`.
+- `cargo llvm-cov` produces a line-coverage summary and `target/coverage/lcov.info`;
+  CI requires at least 80% line coverage (test support code excluded).
 - CLI tests (`tests/cli.rs`) via `assert_cmd`.
-- End-to-end check against real Docker: `just smoke` (labelled nginx, authenticated
-  forward-auth wake, protected waiting page, idle stop), or by hand with `examples/native-proxy`.
+- End-to-end checks against real Docker: `just smoke` (labelled nginx, authenticated
+  forward-auth wake, protected waiting page, idle stop), and `just smoke-traefik`
+  (generated config accepted by Traefik v3.3, authenticated wake, token stripped before
+  the application), or by hand with `examples/native-proxy`.
 
 ## Release
 

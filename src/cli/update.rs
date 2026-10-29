@@ -273,4 +273,61 @@ mod tests {
         .unwrap();
         verify_release(b"sds-release-key-check", &signature, RELEASE_PUBLIC_KEY_HEX).unwrap();
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_preserves_a_rollback_binary_and_replaces_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("sds");
+        std::fs::write(&target, b"old binary").unwrap();
+        install(&target, b"#!/bin/sh\necho 'sds 9.9.9'\n", "9.9.9").unwrap();
+        assert!(std::fs::read_to_string(&target).unwrap().contains("9.9.9"));
+        assert_eq!(std::fs::read(backup_path(&target)).unwrap(), b"old binary");
+        assert!(!target.parent().unwrap().join(format!(".sds-update-{}", std::process::id())).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_leaves_the_original_binary_when_validation_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("sds");
+        std::fs::write(&target, b"old binary").unwrap();
+        assert!(install(&target, b"#!/bin/sh\necho 'unexpected'\n", "9.9.9").is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"old binary");
+        assert!(!backup_path(&target).exists());
+    }
+
+    #[tokio::test]
+    async fn downloads_are_streamed_with_a_hard_size_limit() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 1024];
+                let size = socket.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..size]);
+                if request.contains("/big") {
+                    let headers = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        MAX_DOWNLOAD_BYTES + 1
+                    );
+                    socket.write_all(headers.as_bytes()).await.unwrap();
+                } else {
+                    socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nbinary")
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        let client = reqwest::Client::new();
+        let bytes = download(&client, &format!("http://{addr}/small")).await.unwrap();
+        assert_eq!(bytes, b"binary");
+        let error = download(&client, &format!("http://{addr}/big")).await.unwrap_err();
+        assert!(error.to_string().contains("64 MiB"));
+        server.abort();
+    }
 }

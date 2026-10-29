@@ -7,12 +7,11 @@ COPY src ./src
 # The logo is compiled into the binary for the web UI.
 COPY assets/logo/sds-logo.svg ./assets/logo/
 # Version is stamped at build time (build.rs reads SDS_VERSION); the release workflow
-# passes the tag.
+# passes the tag. Cargo.toml and Cargo.lock remain untouched for reproducible locked builds.
 ARG SDS_VERSION=0.0.0-dev
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    sed -i "s/^version = \".*\"/version = \"${SDS_VERSION}\"/" Cargo.toml \
-    && cargo build --release --locked && cp target/release/sds /sds
+    cargo build --release --locked && cp target/release/sds /sds
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates=* \
