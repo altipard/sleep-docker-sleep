@@ -42,6 +42,12 @@ const PROBE_INTERVAL: Duration = Duration::from_millis(500);
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Extra time granted to a running `docker stop` when the actor is shut down.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// Network/API budget after Docker's own stop grace period. Short in tests to keep the
+/// hanging-backend regression fast.
+#[cfg(not(test))]
+const DOCKER_NETWORK_GRACE: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const DOCKER_NETWORK_GRACE: Duration = Duration::from_millis(50);
 
 /// Loop timing; the defaults are production values, tests shorten them.
 #[derive(Debug, Clone, Copy)]
@@ -226,7 +232,7 @@ impl GroupActor {
                 _ = tick.tick() => {
                     ticks = ticks.wrapping_add(1);
                     self.check_idle();
-                    if ticks % self.timing.reconcile_every_ticks == 0 && self.transition.is_none() {
+                    if ticks.is_multiple_of(self.timing.reconcile_every_ticks) && self.transition.is_none() {
                         self.reconcile().await;
                     }
                 }
@@ -652,6 +658,22 @@ async fn start_group(
     settings: GroupSettings,
     http: reqwest::Client,
 ) -> Transition {
+    let timeout = settings.start_timeout;
+    match tokio::time::timeout(timeout, start_group_inner(backend, members, settings, http)).await {
+        Ok(transition) => transition,
+        Err(_) => Transition::StartFailed(format!(
+            "not ready after {}: Docker operation or health check exceeded the deadline",
+            humantime::format_duration(timeout)
+        )),
+    }
+}
+
+async fn start_group_inner(
+    backend: Arc<dyn Backend>,
+    members: Vec<MemberSpec>,
+    settings: GroupSettings,
+    http: reqwest::Client,
+) -> Transition {
     for m in &members {
         if let Err(e) = backend.start(&m.id).await {
             return Transition::StartFailed(format!("docker start `{}`: {e}", m.name));
@@ -677,9 +699,15 @@ async fn start_group(
 }
 
 async fn stop_group(backend: Arc<dyn Backend>, members: Vec<MemberSpec>, timeout: Duration) -> Transition {
+    let request_timeout = timeout.saturating_add(DOCKER_NETWORK_GRACE);
     let results = futures_util::future::join_all(members.iter().map(|m| {
         let backend = Arc::clone(&backend);
-        async move { backend.stop(&m.id, timeout).await.map_err(|e| format!("docker stop `{}`: {e}", m.name)) }
+        async move {
+            match tokio::time::timeout(request_timeout, backend.stop(&m.id, timeout)).await {
+                Ok(result) => result.map_err(|e| format!("docker stop `{}`: {e}", m.name)),
+                Err(_) => Err(format!("docker stop `{}`: timed out after {:?}", m.name, request_timeout)),
+            }
+        }
     }))
     .await;
     let errors: Vec<String> = results.into_iter().filter_map(Result::err).collect();
@@ -710,6 +738,9 @@ pub(super) mod tests {
         /// When set, `inspect` fails with `Unreachable` (simulates a daemon hiccup).
         pub fail_inspect: Mutex<Option<String>>,
         pub fail_stop: Mutex<Option<String>>,
+        pub hang_start: bool,
+        pub hang_stop: bool,
+        pub hang_inspect: bool,
         pub start_calls: Mutex<Vec<String>>,
         pub stop_calls: Mutex<Vec<String>>,
         pub events: Mutex<Option<broadcast::Sender<ContainerEvent>>>,
@@ -760,6 +791,9 @@ pub(super) mod tests {
             Ok(self.containers.lock().unwrap().values().cloned().collect())
         }
         async fn inspect(&self, id: &str) -> Result<ContainerInfo, BackendError> {
+            if self.hang_inspect {
+                std::future::pending().await
+            }
             if let Some(msg) = self.fail_inspect.lock().unwrap().clone() {
                 return Err(BackendError::Unreachable(msg));
             }
@@ -767,6 +801,9 @@ pub(super) mod tests {
         }
         async fn start(&self, id: &str) -> Result<(), BackendError> {
             self.start_calls.lock().unwrap().push(id.to_owned());
+            if self.hang_start {
+                std::future::pending().await
+            }
             if let Some(msg) = self.fail_start.lock().unwrap().clone() {
                 return Err(BackendError::Other(msg));
             }
@@ -778,6 +815,9 @@ pub(super) mod tests {
         }
         async fn stop(&self, id: &str, _timeout: Duration) -> Result<(), BackendError> {
             self.stop_calls.lock().unwrap().push(id.to_owned());
+            if self.hang_stop {
+                std::future::pending().await
+            }
             if let Some(msg) = self.fail_stop.lock().unwrap().clone() {
                 return Err(BackendError::Other(msg));
             }
@@ -852,6 +892,53 @@ pub(super) mod tests {
         let backend: Arc<dyn Backend> = backend;
         let link = spawn(spec, backend, Arc::clone(&bus), ev_rx, reqwest::Client::new(), FAST_TIMING, false);
         (link, bus, ev_tx)
+    }
+
+    #[tokio::test]
+    async fn start_timeout_bounds_a_hanging_docker_start() {
+        let mut backend = MockBackend::default();
+        backend.add("app", false);
+        backend.hang_start = true;
+        let backend: Arc<dyn Backend> = Arc::new(backend);
+        let settings = GroupSettings { start_timeout: Duration::from_millis(50), ..fast_settings() };
+        let members = spec(&["app"], settings.clone()).members;
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            start_group(backend, members, settings, reqwest::Client::new()),
+        )
+        .await
+        .expect("docker start escaped start_timeout");
+        assert!(matches!(result, Transition::StartFailed(reason) if reason.contains("not ready after")));
+    }
+
+    #[tokio::test]
+    async fn start_timeout_bounds_a_hanging_health_inspect() {
+        let mut backend = MockBackend::default();
+        backend.add("app", false);
+        backend.hang_inspect = true;
+        let backend: Arc<dyn Backend> = Arc::new(backend);
+        let settings = GroupSettings { start_timeout: Duration::from_millis(50), ..fast_settings() };
+        let members = spec(&["app"], settings.clone()).members;
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            start_group(backend, members, settings, reqwest::Client::new()),
+        )
+        .await
+        .expect("health inspect escaped start_timeout");
+        assert!(matches!(result, Transition::StartFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn stop_has_a_network_deadline_beyond_the_container_grace_period() {
+        let mut backend = MockBackend::default();
+        backend.add("app", true);
+        backend.hang_stop = true;
+        let backend: Arc<dyn Backend> = Arc::new(backend);
+        let members = spec(&["app"], fast_settings()).members;
+        let result = tokio::time::timeout(Duration::from_secs(1), stop_group(backend, members, Duration::ZERO))
+            .await
+            .expect("docker stop escaped its network deadline");
+        assert!(matches!(result, Transition::StopFailed(reason) if reason.contains("timed out")));
     }
 
     #[tokio::test]

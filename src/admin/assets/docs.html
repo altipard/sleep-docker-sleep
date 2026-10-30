@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>sds · API</title>
 <link rel="icon" type="image/svg+xml" href="/logo.svg">
-<!-- Swagger UI is loaded from a CDN to keep the binary small; the spec itself is served by sds at /openapi.json. -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui.css">
+<!-- Swagger UI is embedded so the admin token is never exposed to third-party scripts. -->
+<link rel="stylesheet" href="/swagger-ui.css">
 <style>
   body { margin: 0; }
   .topbar-sds { display: flex; align-items: center; gap: 12px; padding: 10px 24px; font: 14px system-ui, sans-serif; border-bottom: 1px solid #e5e7eb; }
@@ -19,15 +19,15 @@
 <div class="topbar-sds"><img src="/logo.svg" alt=""><strong>sleep-docker-sleep API</strong><a href="/">← overview</a></div>
 <div id="swagger"></div>
 <p id="offline">Swagger UI could not be loaded (no internet access?). The specification is available at <a href="/openapi.json">/openapi.json</a>.</p>
-<script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"></script>
+<script src="/swagger-ui-bundle.js"></script>
 <script>
   if (typeof SwaggerUIBundle === 'undefined') {
     document.getElementById('offline').style.display = 'block';
   } else {
-    const ui = SwaggerUIBundle({ url: '/openapi.json', dom_id: '#swagger', deepLinking: true, persistAuthorization: true });
-    // Reuse the token the overview page stored, so "Try it out" works without re-entering it.
+    const ui = SwaggerUIBundle({ url: '/openapi.json', dom_id: '#swagger', deepLinking: true, persistAuthorization: false });
+    // Reuse the token for this browser tab only; never persist it across sessions.
     let token = null;
-    try { token = localStorage.getItem('sds.token'); } catch (e) {}
+    try { token = sessionStorage.getItem('sds.token'); } catch (e) {}
     if (token) ui.preauthorizeApiKey('token', token);
   }
 </script>

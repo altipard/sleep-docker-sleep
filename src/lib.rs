@@ -13,6 +13,9 @@
 //! - [`service`]: launchd / systemd unit generation
 //! - [`tui`]: terminal dashboard for `sds run`
 
+#[cfg(test)]
+mod test_support;
+
 pub mod admin;
 pub mod cli;
 pub mod config;

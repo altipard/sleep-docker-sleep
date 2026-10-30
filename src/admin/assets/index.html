@@ -102,7 +102,7 @@
   const open = new Set();
   let status = null;
   let token = null;
-  try { token = localStorage.getItem('sds.token'); } catch (e) {}
+  try { token = sessionStorage.getItem('sds.token'); } catch (e) {}
 
   function headers() { return token ? { 'X-SDS-Token': token } : {}; }
 
@@ -190,7 +190,7 @@
 
   function askToken() {
     const t = prompt('This sds instance requires a token (admin.token in sds.toml):');
-    if (t) { token = t; try { localStorage.setItem('sds.token', t); } catch (e) {} connect(); }
+    if (t) { token = t; try { sessionStorage.setItem('sds.token', t); } catch (e) {} connect(); }
   }
 
   document.addEventListener('click', (e) => {

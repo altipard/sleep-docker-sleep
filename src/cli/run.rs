@@ -20,6 +20,17 @@ pub struct RunArgs {
     /// Override the admin bind address from sds.toml
     #[arg(long, value_name = "ADDR")]
     pub bind: Option<std::net::SocketAddr>,
+    /// Explicitly allow a non-loopback admin bind without a token (private networks only)
+    #[arg(long)]
+    pub insecure: bool,
+}
+
+fn validate_admin_exposure(cfg: &Config, allow_insecure: bool) -> Result<()> {
+    anyhow::ensure!(
+        cfg.admin.bind.ip().is_loopback() || cfg.admin.token.is_some() || allow_insecure,
+        "admin.bind is not loopback but admin.token is unset; set a token or pass --insecure for a trusted private network"
+    );
+    Ok(())
 }
 
 pub async fn run(explicit: Option<&Path>, args: RunArgs) -> Result<()> {
@@ -28,6 +39,7 @@ pub async fn run(explicit: Option<&Path>, args: RunArgs) -> Result<()> {
         cfg.admin.bind = bind;
     }
     let use_tui = !args.headless && std::io::IsTerminal::is_terminal(&std::io::stdout());
+    validate_admin_exposure(&cfg, args.insecure)?;
 
     let log_buffer = crate::tui::LogBuffer::new(500);
     init_tracing(&cfg, use_tui, &log_buffer);
@@ -35,7 +47,7 @@ pub async fn run(explicit: Option<&Path>, args: RunArgs) -> Result<()> {
     if !cfg.admin.bind.ip().is_loopback() && cfg.admin.token.is_none() {
         tracing::warn!(
             bind = %cfg.admin.bind,
-            "admin API is reachable from the network without a token; set admin.token in sds.toml"
+            "admin API is reachable from the network without a token because --insecure was explicitly set"
         );
     }
 
@@ -102,13 +114,12 @@ pub async fn run(explicit: Option<&Path>, args: RunArgs) -> Result<()> {
         // The registry waits for running `docker stop`s; give it its full budget plus slack.
         let _ = tokio::time::timeout(std::time::Duration::from_secs(40), task).await;
     }
-    if let Some(task) = admin_task.take() {
-        if let Ok(Ok(Err(e))) = tokio::time::timeout(std::time::Duration::from_secs(5), task).await {
-            if result.is_ok() {
-                signal_task.abort();
-                return Err(e);
-            }
-        }
+    if let Some(task) = admin_task.take()
+        && let Ok(Ok(Err(e))) = tokio::time::timeout(std::time::Duration::from_secs(5), task).await
+        && result.is_ok()
+    {
+        signal_task.abort();
+        return Err(e);
     }
     signal_task.abort();
     result
@@ -209,4 +220,22 @@ async fn wait_for_shutdown(cancel: CancellationToken, _config: Option<PathBuf>) 
         let _ = tokio::signal::ctrl_c().await;
     }
     cancel.cancel();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_loopback_admin_requires_a_token_or_an_explicit_insecure_override() {
+        let mut cfg = Config::default();
+        cfg.admin.bind = "0.0.0.0:9900".parse().unwrap();
+        assert!(validate_admin_exposure(&cfg, false).is_err());
+        assert!(validate_admin_exposure(&cfg, true).is_ok());
+        cfg.admin.token = Some("secret".into());
+        assert!(validate_admin_exposure(&cfg, false).is_ok());
+        cfg.admin.bind = "127.0.0.1:9900".parse().unwrap();
+        cfg.admin.token = None;
+        assert!(validate_admin_exposure(&cfg, false).is_ok());
+    }
 }

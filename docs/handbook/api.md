@@ -1,13 +1,13 @@
 # HTTP API
 
 Base: `http://<admin.bind>` (default `http://127.0.0.1:9900`). With `admin.token` set,
-`/api/*` and `/_sds/check/*` require the header `X-SDS-Token: <token>` or
+`/api/*`, `/_sds/check/*` and `/_sds/wait/*` require the header `X-SDS-Token: <token>` or
 `Authorization: Bearer <token>`; otherwise `401`.
 
 Interactive documentation (Swagger UI) is at `http://<admin.bind>/docs`, linked from the
 web overview; the OpenAPI 3.1 specification is at `/openapi.json`. Both need no token.
-Swagger UI itself is loaded from cdn.jsdelivr.net; without internet access the page links
-to the raw specification instead.
+Swagger UI and its assets are embedded in the binary and served locally; no CDN or
+internet connection is needed and no third-party script runs in the admin origin.
 
 ## Overview
 
