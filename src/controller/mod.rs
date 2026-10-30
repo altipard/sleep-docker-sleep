@@ -16,6 +16,9 @@ mod snapshot;
 mod supervisor;
 mod time;
 
+#[cfg(test)]
+mod registry_tests;
+
 pub use activity::{Activity, InflightGuard};
 pub use events::{EventBus, EventKind, SdsEvent};
 pub use handle::{GroupHandle, WakeOutcome};

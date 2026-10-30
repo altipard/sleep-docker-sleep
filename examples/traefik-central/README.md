@@ -16,4 +16,6 @@ plus a token, because Traefik reaches it via `host.docker.internal`). Alternativ
 use `http://sds:9900/_sds/check/<group>` in the labels; then no host port is needed.
 
 Traefik has no fail-open for forwardAuth: while `sds` is down, requests fail with 500.
-Keep `sds` under systemd/launchd with automatic restart.
+Keep `sds` under systemd/launchd with automatic restart. From the repository root,
+`just smoke-traefik` verifies this complete setup with token authentication, a real
+sleep/wake cycle and a check that the application never receives the token.

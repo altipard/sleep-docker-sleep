@@ -13,7 +13,7 @@ possible.
 | Path | Purpose |
 |---|---|
 | `GET /_sds/check/<group>` | Forward-auth. `200` when the group is running. Otherwise it is woken; depending on `wake`, `sds` holds the request or answers with status `503` (or `?deny=…`) and the waiting page. |
-| `GET /_sds/wait/<group>` | Waiting page without auth semantics, for proxies that cannot relay the body of the check response (nginx). |
+| `GET /_sds/wait/<group>` | Waiting page for proxies that cannot relay the body of the check response (nginx); protected by the same token as the check endpoint. |
 
 Parameters for `/_sds/check`:
 
@@ -45,9 +45,10 @@ it as `X-SDS-Token`.
 ## Timeouts
 
 With `wake = hold`, `sds` holds the check request for up to `hold_timeout` (default 60 s).
-The proxy must not abort this connection earlier. The snippets set the respective read
-timeout to `hold_timeout + 5 s`. Whoever raises `hold_timeout` must raise the proxy value
-too; `sds integrate --hold-timeout <sec>` generates the snippet accordingly.
+The proxy must not abort this connection earlier. The nginx and Caddy snippets set the
+respective read timeout to `hold_timeout + 5 s`; `sds integrate --hold-timeout <sec>`
+overrides it. Traefik has no per-middleware `forwardAuthTimeout`; configure its global
+`serversTransport.forwardingTimeouts` when your deployment needs a bound.
 
 ## nginx
 
@@ -102,11 +103,11 @@ The snippet contains the variant as a dynamic file and as container labels.
 - **No fail-open:** Traefik has no bypass for `forwardAuth`. If `sds` is unreachable,
   Traefik answers `500`. Therefore run `sds` as a supervised service (`Restart=always`); a
   restart takes under a second.
-- `forwardAuthTimeout` (Traefik ≥ 3.3) must exceed `hold_timeout`. Older versions use the
-  global `serversTransport` timeout.
-- Token: Traefik cannot attach fixed headers to the auth service. Either run `sds` without
-  a token on a private Docker network (recommended) or add the token with a `headers`
-  middleware in front.
+- Traefik has no per-middleware forward-auth timeout field. If a deployment needs one,
+  configure the global `serversTransport.forwardingTimeouts` to exceed `hold_timeout`.
+- Token: the generated middleware chain sets `X-SDS-Token`, forwards it only to the
+  auth service, and removes it again before the request reaches the application. Tokens
+  are never placed in the forward-auth URL.
 
 ## Verifying
 

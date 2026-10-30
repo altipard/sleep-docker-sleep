@@ -32,7 +32,7 @@ pub struct AdminConfig {
     /// Where the admin API, forward-auth endpoint and web overview listen.
     pub bind: SocketAddr,
     /// Optional bearer token required for `/api/*` and `/_sds/check/*`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "redact_token")]
     pub token: Option<String>,
     /// Public base URL of the waiting page as seen by browsers; only needed when the
     /// reverse proxy cannot serve `/_sds/wait/*` from the same origin.
@@ -51,6 +51,13 @@ impl Default for AdminConfig {
             unknown_group: UnknownGroupPolicy::Allow,
         }
     }
+}
+
+fn redact_token<S>(_token: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str("<redacted>")
 }
 
 /// Forward-auth behaviour for unknown groups. `sds` gates wake-ups, it is not an
@@ -157,10 +164,10 @@ pub fn candidates(explicit: Option<&Path>) -> Vec<PathBuf> {
         out.push(p.to_path_buf());
         return out;
     }
-    if let Ok(p) = std::env::var(ENV_VAR) {
-        if !p.is_empty() {
-            out.push(PathBuf::from(p));
-        }
+    if let Ok(p) = std::env::var(ENV_VAR)
+        && !p.is_empty()
+    {
+        out.push(PathBuf::from(p));
     }
     out.push(PathBuf::from(FILE_NAME));
     if let Some(dirs) = directories::ProjectDirs::from("", "", "sds") {
@@ -335,5 +342,13 @@ mod tests {
     #[test]
     fn explicit_missing_file_is_an_error() {
         assert!(load(Some(Path::new("/nonexistent/sds.toml"))).is_err());
+    }
+
+    #[test]
+    fn serialized_config_redacts_the_admin_token() {
+        let cfg: Config = toml::from_str("[admin]\ntoken = \"supersecret\"").unwrap();
+        let output = toml::to_string_pretty(&cfg).unwrap();
+        assert!(!output.contains("supersecret"));
+        assert!(output.contains("token = \"<redacted>\""));
     }
 }

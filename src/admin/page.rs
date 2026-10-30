@@ -65,12 +65,12 @@ impl WaitPage<'_> {
         if let Ok(v) = HeaderValue::from_str(self.state) {
             headers.insert("x-sds-state", v);
         }
-        if let Some(secs) = self.refresh_secs {
-            if let Ok(v) = HeaderValue::from_str(&secs.to_string()) {
-                headers.insert(header::RETRY_AFTER, v.clone());
-                if wants_html {
-                    headers.insert("refresh", v);
-                }
+        if let Some(secs) = self.refresh_secs
+            && let Ok(v) = HeaderValue::from_str(&secs.to_string())
+        {
+            headers.insert(header::RETRY_AFTER, v.clone());
+            if wants_html {
+                headers.insert("refresh", v);
             }
         }
         resp
@@ -109,7 +109,9 @@ impl OutcomeText {
                 "starting",
                 5,
             ),
-            WakeOutcome::Failed(r) => ("Start failed", format!("{r} — sds retries shortly."), "failed", 10),
+            WakeOutcome::Failed(_) => {
+                ("Start failed", "The service could not be started. sds retries shortly.".to_owned(), "failed", 10)
+            }
             WakeOutcome::Overloaded => (
                 "Busy",
                 "Too many requests are waiting for this service to start. Please retry in a moment.".to_owned(),
@@ -175,5 +177,15 @@ mod tests {
         assert!(!html.contains("/logo.svg"));
         assert!(html.contains("src=\"data:image/svg+xml,"));
         assert!(!LOGO_DATA_URL.contains('"') && !LOGO_DATA_URL.contains('#') && !LOGO_DATA_URL.contains('<'));
+    }
+
+    #[test]
+    fn public_failure_pages_do_not_expose_docker_errors() {
+        let secret = "docker start `db-internal`: connection details";
+        let html =
+            OutcomeText::of(&WakeOutcome::Failed(secret.into())).page("shop", StatusCode::SERVICE_UNAVAILABLE).html();
+        assert!(!html.contains("db-internal"));
+        assert!(!html.contains("connection details"));
+        assert!(html.contains("could not be started"));
     }
 }

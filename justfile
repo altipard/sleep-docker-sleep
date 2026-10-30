@@ -11,8 +11,8 @@ smoke_name := "sds-smoke"
 smoke_port := "18081"
 smoke_admin := "127.0.0.1:9901"
 
-# Lint, test and build (what CI runs on a merge request)
-default: lint test build
+# Lint, test with coverage, audit dependencies and build (what CI runs on a merge request)
+default: lint coverage audit build
 
 # Debug build
 build:
@@ -31,6 +31,12 @@ install: release
 test:
     cargo test --locked
 
+# Line coverage with an LCOV report in target/coverage/lcov.info
+coverage:
+    cargo llvm-cov --version >/dev/null 2>&1 || cargo install cargo-llvm-cov@0.9.1 --locked
+    mkdir -p target/coverage
+    cargo llvm-cov --locked --all-features --workspace --ignore-filename-regex 'src/test_support.rs' --fail-under-lines 80 --lcov --output-path target/coverage/lcov.info
+
 # Format check and clippy with warnings as errors
 lint:
     cargo fmt --all -- --check
@@ -42,7 +48,7 @@ fmt:
 
 # Dependency vulnerability audit (installs cargo-audit on demand)
 audit:
-    cargo audit --version >/dev/null 2>&1 || cargo install cargo-audit --locked
+    cargo audit --version >/dev/null 2>&1 || cargo install cargo-audit@0.22.2 --locked
     cargo audit
 
 # Check commit messages on this branch against Conventional Commits
@@ -91,7 +97,7 @@ docker-build:
 docker-lint:
     docker run --rm -i hadolint/hadolint < Dockerfile
 
-# End-to-end check against real Docker (labelled nginx, forward-auth wake, idle stop)
+# End-to-end check against real Docker (labelled nginx, authenticated wake, idle stop)
 smoke: build
     #!/usr/bin/env bash
     set -euo pipefail
@@ -107,18 +113,26 @@ smoke: build
         -l sds.enable=true -l sds.group=smoke -l sds.idle_timeout=20s \
         -l sds.start_grace=1s -l sds.health=http://127.0.0.1:{{smoke_port}}/ \
         -p 127.0.0.1:{{smoke_port}}:80 nginx:alpine >/dev/null
-    printf '[admin]\nbind = "{{smoke_admin}}"\n' > "$CFG"
+    printf '[admin]\nbind = "{{smoke_admin}}"\ntoken = "smoke-secret"\n' > "$CFG"
     "$SDS" run --headless --config "$CFG" > target/smoke.log 2>&1 &
     PID=$!
     sleep 3
     "$SDS" status --config "$CFG"
     "$SDS" sleep smoke --config "$CFG"; sleep 3
     test "$(docker inspect -f '{{{{.State.Status}}' {{smoke_name}})" = exited
-    test "$(curl -s -o /dev/null -w '%{http_code}' http://{{smoke_admin}}/_sds/check/smoke)" = 200
+    test "$(curl -s -o /dev/null -w '%{http_code}' 'http://{{smoke_admin}}/_sds/check/smoke?token=smoke-secret')" = 401
+    test "$(curl -s -o /dev/null -w '%{http_code}' http://{{smoke_admin}}/_sds/wait/smoke)" = 401
+    ! "$SDS" config --config "$CFG" | grep -q smoke-secret
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-SDS-Token: smoke-secret' http://{{smoke_admin}}/_sds/check/smoke)" = 200
     test "$(docker inspect -f '{{{{.State.Status}}' {{smoke_name}})" = running
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-SDS-Token: smoke-secret' -H 'Accept: text/html' http://{{smoke_admin}}/_sds/wait/smoke)" = 200
     echo "waiting for idle stop (20s)…"; sleep 25
     test "$(docker inspect -f '{{{{.State.Status}}' {{smoke_name}})" = exited
     echo "smoke test passed"
+
+# End-to-end check of the generated Traefik config, auth and token stripping
+smoke-traefik: build
+    bash examples/traefik-central/smoke.sh
 
 # Remove build artefacts
 clean:
