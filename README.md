@@ -72,21 +72,29 @@ browser ──▶ reverse proxy ──(forward-auth: /_sds/check/shop)──▶ 
 `sds` needs Docker Engine 20.10 or newer and access to the Docker socket. It runs on
 Linux (systemd) and macOS (launchd).
 
-**Release binary** (Linux x86_64/aarch64, macOS Apple Silicon/Intel):
+**Release binary** (Linux x86_64/aarch64, macOS Apple Silicon/Intel), including an
+Ed25519 signature and the release public key:
 
 ```bash
-curl -fsSLo sds https://github.com/altipard/sleep-docker-sleep/releases/latest/download/sds-linux-x86_64
+base=https://github.com/altipard/sleep-docker-sleep/releases/latest/download
+curl -fsSLo sds "$base/sds-linux-x86_64"
+curl -fsSLo sds.sig "$base/sds-linux-x86_64.sig"
+curl -fsSLo sds-release-public-key.pem "$base/sds-release-public-key.pem"
+openssl pkeyutl -verify -rawin -pubin -inkey sds-release-public-key.pem -in sds -sigfile sds.sig
 sudo install -m 755 sds /usr/local/bin/sds
 ```
 
-**Cargo** (Rust 1.85+):
+`sds update` performs this signature verification automatically before executing or
+installing a downloaded binary, and keeps the previous binary as `sds.previous`.
+
+**Cargo** (Rust 1.88+):
 
 ```bash
 cargo install --git https://github.com/altipard/sleep-docker-sleep --locked
 ```
 
 **Container** (when your reverse proxy runs as a container too; set
-`[admin] bind = "0.0.0.0:9900"` in the mounted `sds.toml`):
+`[admin] bind = "0.0.0.0:9900"` and an `admin.token` in the mounted `sds.toml`):
 
 ```bash
 docker run -d --name sds \
@@ -208,7 +216,7 @@ Details and the exact snippets are in the [reverse proxy chapter](docs/handbook/
 | `/api/v1/…`, `/api/v1/events` | JSON API and server-sent events for your own tooling. |
 | `http://127.0.0.1:9900/docs` | Swagger UI for the API; the spec is at `/openapi.json`. |
 | `sds service install` | Writes the systemd unit or launchd plist. |
-| `sds update` | Installs the latest release in place; `--check` only reports. |
+| `sds update` | Verifies and installs the latest signed release in place; keeps the previous binary for rollback. |
 
 ## Documentation
 
@@ -243,15 +251,16 @@ consolidated overview across several hosts, are in the [Roadmap](docs/handbook/r
 ## Development
 
 ```bash
-just            # lint, test, build
-just smoke      # end-to-end check against real Docker
+just            # lint, coverage, dependency audit, build
+just smoke      # end-to-end check against real Docker, including auth
+just smoke-traefik # real Traefik auth, wake and token-stripping contract
 just docs-serve # handbook with live reload (mdBook)
 ```
 
-Rust 1.85+ and [just](https://just.systems) are the only tools needed. Examples for host
+Rust 1.88+ and [just](https://just.systems) are the only tools needed. Examples for host
 nginx and Caddy, project and central Traefik, the native proxy and the demo stack live
-under [`examples/`](examples/README.md). Commits follow Conventional Commits; releases are
-cut automatically from `main`.
+under [`examples/`](examples/README.md). Commits follow Conventional Commits. Work lands on
+`develop`; merging `develop` into `main` cuts the release automatically.
 
 ## Acknowledgements
 

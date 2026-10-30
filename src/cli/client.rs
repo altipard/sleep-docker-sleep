@@ -1,5 +1,6 @@
 //! HTTP client for the admin API, used by `status`, `wake`, `sleep`, `hold` and `release`.
 
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -9,6 +10,13 @@ use super::ClientArgs;
 use crate::admin::api::StatusResponse;
 use crate::config;
 use crate::controller::GroupSnapshot;
+
+/// Base URL of the admin API as seen from this host. A wildcard bind is reached via
+/// loopback; formatting through `SocketAddr` puts IPv6 literals in brackets.
+pub(super) fn admin_url(bind: SocketAddr) -> String {
+    let ip = if bind.ip().is_unspecified() { Ipv4Addr::LOCALHOST.into() } else { bind.ip() };
+    format!("http://{}", SocketAddr::new(ip, bind.port()))
+}
 
 pub struct ApiClient {
     base: String,
@@ -23,9 +31,7 @@ impl ApiClient {
         let base = match &args.url {
             Some(u) => u.trim_end_matches('/').to_owned(),
             None => {
-                let bind = cfg.as_ref().map(|c| c.admin.bind).unwrap_or_else(|| config::Config::default().admin.bind);
-                let host = if bind.ip().is_unspecified() { "127.0.0.1".to_owned() } else { bind.ip().to_string() };
-                format!("http://{host}:{}", bind.port())
+                admin_url(cfg.as_ref().map(|c| c.admin.bind).unwrap_or_else(|| config::Config::default().admin.bind))
             }
         };
         let token = args.token.clone().or_else(|| cfg.and_then(|c| c.admin.token));
@@ -90,5 +96,76 @@ impl ApiClient {
             return Ok(None);
         }
         Ok(Some(resp.error_for_status()?.json().await?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, StatusCode, Uri};
+    use axum::response::{IntoResponse, Response};
+    use axum::{Json, Router};
+
+    #[test]
+    fn admin_url_brackets_ipv6() {
+        assert_eq!(admin_url("127.0.0.1:9900".parse().unwrap()), "http://127.0.0.1:9900");
+        assert_eq!(admin_url("0.0.0.0:9900".parse().unwrap()), "http://127.0.0.1:9900");
+        assert_eq!(admin_url("[::1]:9900".parse().unwrap()), "http://[::1]:9900");
+        assert_eq!(admin_url("[::]:9900".parse().unwrap()), "http://127.0.0.1:9900");
+        assert_eq!(admin_url("[fd00::5]:9900".parse().unwrap()), "http://[fd00::5]:9900");
+    }
+
+    async fn api(method: reqwest::Method, uri: Uri, headers: HeaderMap) -> Response {
+        if headers.get("x-sds-token").and_then(|v| v.to_str().ok()) != Some("secret") {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        match (method.as_str(), uri.path()) {
+            ("GET", "/api/v1/status") => Json(serde_json::json!({
+                "version": "test",
+                "now_ms": 1,
+                "uptime_ms": 2,
+                "docker": "mock",
+                "last_discovery_ms": 3,
+                "warnings": [],
+                "groups": [],
+                "events": []
+            }))
+            .into_response(),
+            ("GET", "/api/v1/groups/shop") => {
+                Json(crate::test_support::snapshot("shop", crate::controller::StateKind::Running)).into_response()
+            }
+            ("POST", "/api/v1/groups/shop/wake") => {
+                (StatusCode::OK, Json(serde_json::json!({"result": "running"}))).into_response()
+            }
+            ("POST", "/api/v1/groups/shop/sleep" | "/api/v1/groups/shop/hold" | "/api/v1/groups/shop/release") => {
+                (StatusCode::ACCEPTED, Json(serde_json::json!({"requested": "ok"}))).into_response()
+            }
+            _ => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+
+    #[tokio::test]
+    async fn client_sends_tokens_and_handles_all_operator_responses() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, Router::new().fallback(api)).await.unwrap() });
+        let args = crate::cli::ClientArgs { url: Some(format!("http://{addr}")), token: Some("secret".into()) };
+        let client = ApiClient::from_args(None, &args).unwrap();
+        assert_eq!(client.base(), format!("http://{addr}"));
+        assert_eq!(client.status().await.unwrap().version, "test");
+        assert_eq!(client.wake("shop", true).await.unwrap().0, StatusCode::OK);
+        assert_eq!(client.sleep("shop").await.unwrap().0, StatusCode::ACCEPTED);
+        assert_eq!(client.set_hold("shop", true).await.unwrap().0, StatusCode::ACCEPTED);
+        assert_eq!(client.set_hold("shop", false).await.unwrap().0, StatusCode::ACCEPTED);
+        assert_eq!(client.group("shop").await.unwrap().unwrap().name, "shop");
+        assert!(client.group("missing").await.unwrap().is_none());
+
+        let wrong = ApiClient::from_args(
+            None,
+            &crate::cli::ClientArgs { url: Some(format!("http://{addr}")), token: Some("wrong".into()) },
+        )
+        .unwrap();
+        assert!(wrong.status().await.unwrap_err().to_string().contains("rejected the token"));
+        server.abort();
     }
 }

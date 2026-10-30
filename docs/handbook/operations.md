@@ -4,7 +4,7 @@
 
 | Command | Purpose |
 |---|---|
-| `sds run [--headless] [--bind ADDR]` | Start the daemon. With a dashboard in a terminal; without a TTY or with `--headless` logs only. |
+| `sds run [--headless] [--bind ADDR] [--insecure]` | Start the daemon. With a dashboard in a terminal; without a TTY or with `--headless` logs only. Non-loopback binds require a token or explicit `--insecure`. |
 | `sds status [--json] [--events]` | All groups with state, containers, last request, time left until sleep. |
 | `sds top` (alias `attach`) | Attach the terminal dashboard to the running daemon; `q` detaches, the daemon keeps running. |
 | `sds wake <group> [--wait]` | Start a group; with `--wait` the command blocks until ready (non-zero exit code on failure). |
@@ -45,8 +45,9 @@ information, live via server-sent events: groups, countdown until sleep, warning
 log, buttons for wake, sleep and hold/release. Clicking a row shows the effective settings and the
 forward-auth URL. The header links to the API documentation at `/docs`.
 
-If a token is set, the page asks for it once and stores it in the browser. Only expose it
-beyond the host behind a reverse proxy with TLS.
+If a token is set, the page asks for it once per browser tab and stores it only in
+`sessionStorage`. Swagger UI is served locally without third-party scripts. Only expose
+the admin UI beyond the host behind a reverse proxy with TLS.
 
 ## Group states
 
@@ -110,9 +111,10 @@ bundled units do that.
 
 - The Docker socket equals root. Run `sds` only as a trusted user.
 - Leave `admin.bind` on `127.0.0.1` wherever possible. Otherwise set `admin.token` and do
-  not publish the port.
-- The waiting page reveals only the group name and the state, no container ids.
-- The check endpoint can wake groups. With a token it is usable only by the proxy.
+  not publish the port. Startup refuses a non-loopback bind without a token unless
+  `--insecure` explicitly documents a trusted private-network setup.
+- The waiting page reveals only the group name and a generic state, no container ids or
+  Docker error details. With a token it is usable only through the proxy.
 
 ## Backup
 

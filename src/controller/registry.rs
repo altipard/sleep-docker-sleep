@@ -120,13 +120,13 @@ impl Registry {
     /// actor always converges on the latest discovery.
     pub fn apply(&self, discovery: Discovery) {
         self.last_discovery_ms.store(super::epoch_ms(), std::sync::atomic::Ordering::Relaxed);
-        if let Ok(mut w) = self.discovery_warnings.write() {
-            if *w != discovery.warnings {
-                for warning in discovery.warnings.iter().filter(|x| !w.contains(x)) {
-                    self.bus.emit(SdsEvent::new("-", EventKind::Warning, warning.clone()));
-                }
-                *w = discovery.warnings;
+        if let Ok(mut w) = self.discovery_warnings.write()
+            && *w != discovery.warnings
+        {
+            for warning in discovery.warnings.iter().filter(|x| !w.contains(x)) {
+                self.bus.emit(SdsEvent::new("-", EventKind::Warning, warning.clone()));
             }
+            *w = discovery.warnings;
         }
         let Ok(mut entries) = self.entries.write() else {
             return;
@@ -198,16 +198,16 @@ impl Registry {
         if wanted == current {
             return;
         }
-        if let (Some(proxy), Some(settings)) = (entry.proxy.as_ref(), &wanted) {
-            if proxy.listen() == settings.listen {
-                proxy.update(settings.clone());
-                self.bus.emit(SdsEvent::new(
-                    &spec.name,
-                    EventKind::Discovered,
-                    format!("native proxy on {} now {} -> {}", settings.listen, settings.mode, settings.upstream),
-                ));
-                return;
-            }
+        if let (Some(proxy), Some(settings)) = (entry.proxy.as_ref(), &wanted)
+            && proxy.listen() == settings.listen
+        {
+            proxy.update(settings.clone());
+            self.bus.emit(SdsEvent::new(
+                &spec.name,
+                EventKind::Discovered,
+                format!("native proxy on {} now {} -> {}", settings.listen, settings.mode, settings.upstream),
+            ));
+            return;
         }
         if let Some(p) = entry.proxy.take() {
             p.stop();
