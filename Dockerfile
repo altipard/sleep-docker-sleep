@@ -9,8 +9,11 @@ COPY assets/logo/sds-logo.svg ./assets/logo/
 # Version is stamped at build time (build.rs reads SDS_VERSION); the release workflow
 # passes the tag. Cargo.toml and Cargo.lock remain untouched for reproducible locked builds.
 ARG SDS_VERSION=0.0.0-dev
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+# Multi-arch builds run concurrently; isolated cache ids avoid Cargo registry races and
+# prevent objects from different architectures from sharing one target directory.
+ARG TARGETARCH
+RUN --mount=type=cache,id=cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
+    --mount=type=cache,id=sds-target-${TARGETARCH},target=/src/target \
     cargo build --release --locked && cp target/release/sds /sds
 
 FROM debian:bookworm-slim
