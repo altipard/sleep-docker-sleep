@@ -12,9 +12,8 @@
 //! | GET    | `/_sds/check/{group}`         | forward-auth: 200 when running, else wake |
 //! | GET    | `/_sds/wait/{group}`          | waiting page (for nginx `error_page`)     |
 //!
-//! `/_sds/wait` is deliberately outside the token layer and triggers a wake: it is the page
-//! a browser lands on after nginx denied the request, and it must work without credentials.
-//! A wake is what any request to the site would cause anyway.
+//! `/_sds/wait` triggers a wake and is protected by the same token as the check endpoint.
+//! nginx adds that token in its internal waiting-page location, so browsers never see it.
 //! | GET    | `/api/v1/status`              | everything the UI shows                   |
 //! | GET    | `/api/v1/groups/{group}`      | one group                                 |
 //! | POST   | `/api/v1/groups/{group}/wake` | start now (`?wait=true` blocks until ready)|
@@ -29,6 +28,9 @@ mod forward_auth;
 mod page;
 pub use page::{OutcomeText, page_for_outcome};
 mod web;
+
+#[cfg(test)]
+mod tests;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -59,15 +61,17 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/v1/groups/{group}/release", post(api::release))
         .route("/api/v1/events", get(api::events))
         .route("/_sds/check/{group}", get(forward_auth::check).head(forward_auth::check))
+        .route("/_sds/wait/{group}", get(forward_auth::wait))
         .layer(axum::middleware::from_fn_with_state(Arc::clone(&state), auth::require_token));
 
     Router::new()
         .route("/", get(web::index))
         .route("/logo.svg", get(web::logo))
         .route("/docs", get(web::docs))
+        .route("/swagger-ui.css", get(web::swagger_css))
+        .route("/swagger-ui-bundle.js", get(web::swagger_js))
         .route("/openapi.json", get(web::openapi))
         .route("/healthz", get(|| async { "ok" }))
-        .route("/_sds/wait/{group}", get(forward_auth::wait))
         .merge(protected)
         .with_state(state)
 }

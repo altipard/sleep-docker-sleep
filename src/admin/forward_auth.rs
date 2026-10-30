@@ -89,10 +89,7 @@ pub async fn wait(State(state): State<SharedState>, Path(group): Path<String>) -
         StateKind::Failed if snap.in_retry_pause() => WaitPage {
             group: &group,
             title: "Start failed",
-            message: &format!(
-                "{} — sds retries on the next request.",
-                snap.last_error.unwrap_or_else(|| "unknown error".into())
-            ),
+            message: "The service could not be started. sds retries on the next request.",
             status: StatusCode::SERVICE_UNAVAILABLE,
             refresh_secs: Some(10),
             state: "failed",

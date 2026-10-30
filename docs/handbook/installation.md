@@ -11,14 +11,19 @@
 ## Option A: binary on the host (recommended)
 
 Every [GitHub release](https://github.com/altipard/sleep-docker-sleep/releases) ships
-binaries for Linux (x86_64, aarch64) and macOS (Apple Silicon, Intel):
+binaries for Linux (x86_64, aarch64) and macOS (Apple Silicon, Intel), plus an Ed25519
+signature and the release public key:
 
 ```bash
-curl -fsSLo sds https://github.com/altipard/sleep-docker-sleep/releases/latest/download/sds-linux-x86_64
+base=https://github.com/altipard/sleep-docker-sleep/releases/latest/download
+curl -fsSLo sds "$base/sds-linux-x86_64"
+curl -fsSLo sds.sig "$base/sds-linux-x86_64.sig"
+curl -fsSLo sds-release-public-key.pem "$base/sds-release-public-key.pem"
+openssl pkeyutl -verify -rawin -pubin -inkey sds-release-public-key.pem -in sds -sigfile sds.sig
 sudo install -m 755 sds /usr/local/bin/sds
 ```
 
-Or build from source (Rust 1.85+):
+Or build from source (Rust 1.88+):
 
 ```bash
 cargo install --git https://github.com/altipard/sleep-docker-sleep --locked
@@ -70,8 +75,9 @@ services:
 ```
 
 `sds.toml` must then contain `admin.bind = "0.0.0.0:9900"`, and the reverse proxy uses
-`http://sds:9900/_sds/check/<group>`. Do **not** publish the port to the outside, or set an
-`admin.token`.
+`http://sds:9900/_sds/check/<group>`. Set an `admin.token`; alternatively, for a dedicated
+trusted private network only, use `command: ["run", "--headless", "--insecure"]`. Do **not**
+publish the admin port to the outside.
 
 Health checks with `http://…` or `tcp://…` are executed from inside the `sds` container.
 Give addresses as reachable from there (`http://app:3000/` instead of `127.0.0.1:18080`).
@@ -84,9 +90,10 @@ local Docker daemon. An overview across hosts can be built on the [HTTP API](api
 
 ## Upgrading
 
-`sds update` downloads the latest release for this platform from GitHub, checks that it
-runs and reports the expected version, and replaces the running binary in place. Restart
-the service afterwards:
+`sds update` downloads the latest release for this platform from GitHub, verifies its
+Ed25519 signature before executing it, checks that it runs and reports the expected
+version, and replaces the running binary in place. The previous binary is preserved next
+to it as `sds.previous` for rollback. Restart the service afterwards:
 
 ```bash
 sds update --check                          # only report whether a newer release exists

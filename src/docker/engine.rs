@@ -220,4 +220,84 @@ mod tests {
         let msg = EventMessage { typ: Some(EventMessageTypeEnum::IMAGE), ..Default::default() };
         assert!(from_event(msg).is_none());
     }
+
+    #[test]
+    fn maps_container_summaries_and_inspects() {
+        use bollard::models::{
+            ContainerConfig, ContainerState, ContainerStateStatusEnum, ContainerSummaryStateEnum, Health, HealthConfig,
+        };
+
+        let summary = from_summary(ContainerSummary {
+            id: Some("abc".into()),
+            names: Some(vec!["/shop".into()]),
+            state: Some(ContainerSummaryStateEnum::RUNNING),
+            labels: Some(HashMap::from([("sds.enable".into(), "true".into())])),
+            ..Default::default()
+        });
+        assert_eq!(summary.id, "abc");
+        assert_eq!(summary.name, "shop");
+        assert!(summary.running);
+        assert_eq!(summary.labels["sds.enable"], "true");
+
+        let inspected = from_inspect(ContainerInspectResponse {
+            id: Some("abc".into()),
+            name: Some("/shop".into()),
+            state: Some(ContainerState {
+                running: Some(true),
+                status: Some(ContainerStateStatusEnum::RUNNING),
+                health: Some(Health { status: Some(HealthStatusEnum::HEALTHY), ..Default::default() }),
+                ..Default::default()
+            }),
+            config: Some(ContainerConfig {
+                healthcheck: Some(HealthConfig { test: Some(vec!["CMD".into()]), ..Default::default() }),
+                labels: Some(HashMap::new()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert!(inspected.running);
+        assert!(inspected.has_healthcheck);
+        assert_eq!(inspected.health, HealthState::Healthy);
+        assert_eq!(inspected.status, "running");
+    }
+
+    #[test]
+    fn maps_docker_errors_and_all_relevant_event_actions() {
+        let not_found = map_err(
+            "abc",
+            bollard::errors::Error::DockerResponseServerError { status_code: 404, message: "missing".into() },
+        );
+        assert!(matches!(not_found, BackendError::NotFound(id) if id == "abc"));
+        let api = map_err(
+            "abc",
+            bollard::errors::Error::DockerResponseServerError { status_code: 500, message: "boom".into() },
+        );
+        assert!(matches!(api, BackendError::Api { status: 500, .. }));
+
+        for (action, expected) in [
+            ("create", EventAction::Create),
+            ("start", EventAction::Start),
+            ("die", EventAction::Die),
+            ("stop", EventAction::Stop),
+            ("destroy", EventAction::Destroy),
+            ("rename", EventAction::Rename),
+        ] {
+            let event = from_event(EventMessage {
+                typ: Some(EventMessageTypeEnum::CONTAINER),
+                action: Some(action.into()),
+                actor: Some(EventActor { id: Some("abc".into()), ..Default::default() }),
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(event.action, expected);
+        }
+        let other = from_event(EventMessage {
+            typ: Some(EventMessageTypeEnum::CONTAINER),
+            action: Some("pause".into()),
+            actor: Some(EventActor { id: Some("abc".into()), ..Default::default() }),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(other.action, EventAction::Other("pause".into()));
+    }
 }

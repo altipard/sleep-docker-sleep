@@ -229,4 +229,77 @@ mod tests {
         assert_eq!(fmt_age(None, 0), "—");
         assert_eq!(fmt_age(Some(1_000), 61_000), "1m ago");
     }
+
+    #[test]
+    fn table_renders_states_activity_timeouts_and_notes() {
+        let mut running = crate::test_support::snapshot("shop", StateKind::Running);
+        running.inflight = 2;
+        running.warnings.push("configuration warning".into());
+        running.last_error = Some("last failure".into());
+        let mut held = crate::test_support::snapshot("db", StateKind::Stopped);
+        held.held = true;
+        let failed = crate::test_support::snapshot("web", StateKind::Failed);
+        let output = render_table(&[running, held, failed], crate::controller::epoch_ms()).to_string();
+        assert!(output.contains("shop"));
+        assert!(output.contains("running"));
+        assert!(output.contains("stopped (held)"));
+        assert!(output.contains("failed"));
+        assert!(output.contains("configuration warning"));
+        assert!(output.contains("last failure"));
+        assert!(output.contains("15m"));
+    }
+
+    #[tokio::test]
+    async fn commands_render_status_and_execute_operator_actions() {
+        use axum::http::{HeaderMap, StatusCode, Uri};
+        use axum::response::{IntoResponse, Response};
+        use axum::{Json, Router};
+
+        async fn api(method: axum::http::Method, uri: Uri, _headers: HeaderMap) -> Response {
+            match (method.as_str(), uri.path()) {
+                ("GET", "/api/v1/status") => Json(crate::admin::api::StatusResponse {
+                    version: "test".into(),
+                    now_ms: crate::controller::epoch_ms(),
+                    uptime_ms: 1_000,
+                    docker: "mock".into(),
+                    last_discovery_ms: 1,
+                    warnings: vec!["test warning".into()],
+                    groups: vec![crate::test_support::snapshot("shop", StateKind::Running)],
+                    events: vec![crate::controller::SdsEvent::new(
+                        "shop",
+                        crate::controller::EventKind::Running,
+                        "ready",
+                    )],
+                })
+                .into_response(),
+                ("POST", "/api/v1/groups/shop/wake") => {
+                    let (code, result) = if uri.query().is_some() {
+                        (StatusCode::OK, "running")
+                    } else {
+                        (StatusCode::ACCEPTED, "wake requested")
+                    };
+                    (code, Json(serde_json::json!({"result": result}))).into_response()
+                }
+                ("POST", "/api/v1/groups/shop/sleep" | "/api/v1/groups/shop/hold" | "/api/v1/groups/shop/release") => {
+                    (StatusCode::ACCEPTED, Json(serde_json::json!({"requested": "ok"}))).into_response()
+                }
+                _ => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "unknown group"}))).into_response(),
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, Router::new().fallback(api)).await.unwrap() });
+        let client = || super::super::ClientArgs { url: Some(format!("http://{addr}")), token: None };
+        status(None, StatusArgs { client: client(), json: false, events: true }).await.unwrap();
+        status(None, StatusArgs { client: client(), json: true, events: false }).await.unwrap();
+        wake(None, WakeArgs { client: client(), group: "shop".into(), wait: false }).await.unwrap();
+        wake(None, WakeArgs { client: client(), group: "shop".into(), wait: true }).await.unwrap();
+        sleep(None, SleepArgs { client: client(), group: "shop".into() }).await.unwrap();
+        set_hold(None, HoldArgs { client: client(), group: "shop".into() }, true).await.unwrap();
+        set_hold(None, HoldArgs { client: client(), group: "shop".into() }, false).await.unwrap();
+        assert!(wake(None, WakeArgs { client: client(), group: "missing".into(), wait: false }).await.is_err());
+        assert!(sleep(None, SleepArgs { client: client(), group: "missing".into() }).await.is_err());
+        server.abort();
+    }
 }

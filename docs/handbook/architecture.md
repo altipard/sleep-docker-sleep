@@ -93,20 +93,29 @@ The version shown by `--version`, the web overview, the API and the dashboard co
 
 - Unit tests per module (`cargo test`), including the state machine against an in-memory
   `MockBackend` (`controller/actor.rs`): wake, idle stop, open connections, failed start
-  with rate limiting, external start/stop events, wake during stop.
-- Snippet generators and unit files are checked for the decisive lines.
+  with rate limiting, external start/stop events, wake during stop and hanging Docker calls.
+- Snippet generators and unit files are checked for the decisive lines, including the
+  Traefik token-injection/stripping chain.
+- `cargo audit` checks the locked dependency graph against RustSec advisories.
+- `cargo llvm-cov` produces a line-coverage summary and `target/coverage/lcov.info`;
+  CI requires at least 80% line coverage (test support code excluded).
 - CLI tests (`tests/cli.rs`) via `assert_cmd`.
-- End-to-end check against real Docker: `just smoke` (labelled nginx, forward-auth wake,
-  idle stop), or by hand with `examples/native-proxy`.
+- End-to-end checks against real Docker: `just smoke` (labelled nginx, authenticated
+  forward-auth wake, protected waiting page, idle stop), and `just smoke-traefik`
+  (generated config accepted by Traefik v3.3, authenticated wake, token stripped before
+  the application), or by hand with `examples/native-proxy`.
 
 ## Release
 
 Conventional Commits and commitizen decide the version: `fix` → patch, `feat` → minor,
 `!` → major; other types do not trigger a release. Versions live in git tags only.
 `.github/workflows/ci.yml` runs fmt, clippy, tests, hadolint and the commit-format check
-on pull requests. `.github/workflows/release.yml` runs on `main`: it asks commitizen for
-the next version, builds binaries for Linux and macOS with that version stamped into the
-binary, pushes the image to `ghcr.io` and creates the tag and the GitHub release.
+on pull requests. `.github/workflows/release.yml` runs on `main`: it verifies formatting,
+Clippy and tests, asks commitizen for the next version, builds locked binaries for Linux
+and macOS with that version stamped into the binary, pushes the image to `ghcr.io`, signs
+every binary with Ed25519 and creates the tag and the GitHub release. The private key is
+stored only in the `SDS_SIGNING_PRIVATE_KEY` GitHub Actions secret; `sds update` verifies
+the signature with the public key embedded in the binary before installing anything.
 
 Development happens on `develop`, the default branch; feature branches and outside pull
 requests target it. A release is a pull request from `develop` into `main`, merged with a

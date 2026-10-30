@@ -1,6 +1,5 @@
 # Release from main: commitizen computes the next version from the commits since the last
-# tag (fix -> patch, feat -> minor, ! -> major; other types -> no release). The version
-# lives in git tags only and is stamped into the binaries and the image at build time.
+# tag. Versions live in git tags only and are stamped into binaries and the image.
 name: release
 
 on:
@@ -11,8 +10,6 @@ permissions:
   contents: write
   packages: write
 
-# One release at a time: a run computes its version only after the previous run has
-# tagged, so two quick pushes cannot both claim the same version.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -20,6 +17,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   IMAGE: ghcr.io/${{ github.repository }}
+  RUST_TOOLCHAIN: "1.90.0"
 
 jobs:
   version:
@@ -27,16 +25,19 @@ jobs:
     outputs:
       version: ${{ steps.next.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - run: pip install --quiet commitizen
+      - name: require the release signing key
+        env:
+          SDS_SIGNING_PRIVATE_KEY: ${{ secrets.SDS_SIGNING_PRIVATE_KEY }}
+        run: test -n "$SDS_SIGNING_PRIVATE_KEY" || { echo "SDS_SIGNING_PRIVATE_KEY is not configured"; exit 1; }
+      - run: pip install --quiet commitizen==4.8.3
       - id: next
-        # --yes answers the "first tag?" prompt on a repo without tags. commitizen prints
-        # that warning to stdout, so only a line that looks like a version is accepted.
+        # Accept only a version-looking line from commitizen's output.
         run: |
           VERSION=$(cz bump --get-next --yes 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | tail -n1 || true)
           git fetch --quiet --tags origin
@@ -47,50 +48,61 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "next version: ${VERSION:-none (no release-relevant commits)}"
 
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --all-features
+
   binaries:
-    needs: version
+    needs: [version, verify]
     if: needs.version.outputs.version != ''
     strategy:
       matrix:
         include:
-          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  name: sds-linux-x86_64 }
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu, name: sds-linux-x86_64 }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, name: sds-linux-aarch64 }
           - { os: macos-latest,     target: aarch64-apple-darwin,      name: sds-macos-aarch64 }
-          # No Intel runner needed: the Apple SDK targets both architectures.
           - { os: macos-latest,     target: x86_64-apple-darwin,       name: sds-macos-x86_64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - name: stamp version
-        run: sed -i.bak "s/^version = \".*\"/version = \"${{ needs.version.outputs.version }}\"/" Cargo.toml && rm Cargo.toml.bak
-      - run: cargo build --release --target ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+      - run: cargo build --locked --release --target ${{ matrix.target }}
         env:
           SDS_VERSION: ${{ needs.version.outputs.version }}
       - run: cp target/${{ matrix.target }}/release/sds ${{ matrix.name }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}
           if-no-files-found: error
 
   image:
-    needs: version
+    needs: [version, verify]
     if: needs.version.outputs.version != ''
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -107,14 +119,30 @@ jobs:
     if: needs.version.outputs.version != ''
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           pattern: sds-*
           merge-multiple: true
+      - name: sign release binaries
+        env:
+          SDS_SIGNING_PRIVATE_KEY: ${{ secrets.SDS_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SDS_SIGNING_PRIVATE_KEY" ]; then
+            echo "SDS_SIGNING_PRIVATE_KEY is required; refusing to publish unsigned binaries"
+            exit 1
+          fi
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$SDS_SIGNING_PRIVATE_KEY" > "$key"
+          chmod 600 "$key"
+          for file in dist/sds-*; do
+            openssl pkeyutl -sign -rawin -inkey "$key" -in "$file" -out "$file.sig"
+          done
+          openssl pkey -in "$key" -pubout -out dist/sds-release-public-key.pem
       - name: tag and release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

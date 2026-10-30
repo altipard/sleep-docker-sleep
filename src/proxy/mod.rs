@@ -9,6 +9,9 @@
 mod http;
 mod tcp;
 
+#[cfg(test)]
+mod tests;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -42,7 +45,8 @@ impl ProxyTask {
             .map_err(|e| anyhow::anyhow!("bind {}: {e}", settings.listen))?;
         std_listener.set_nonblocking(true)?;
         let listener = TcpListener::from_std(std_listener)?;
-        let listen = settings.listen;
+        // Report the effective address, including the OS-assigned port for `listen = 0`.
+        let listen = listener.local_addr()?;
         let (tx, rx) = watch::channel(settings);
         let cancel = CancellationToken::new();
         let task = tokio::spawn(run(listener, handle, rx, cancel.clone(), bus));

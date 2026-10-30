@@ -4,6 +4,8 @@ use axum::response::{Html, IntoResponse, Response};
 const INDEX: &str = include_str!("assets/index.html");
 const DOCS: &str = include_str!("assets/docs.html");
 const OPENAPI: &str = include_str!("assets/openapi.json");
+const SWAGGER_CSS: &str = include_str!("assets/swagger-ui.css");
+const SWAGGER_JS: &str = include_str!("assets/swagger-ui-bundle.js");
 const LOGO: &str = include_str!("../../assets/logo/sds-logo.svg");
 
 pub async fn index() -> Response {
@@ -18,6 +20,28 @@ pub async fn logo() -> Response {
 
 pub async fn docs() -> Response {
     Html(DOCS).into_response()
+}
+
+pub async fn swagger_css() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        SWAGGER_CSS,
+    )
+        .into_response()
+}
+
+pub async fn swagger_js() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        SWAGGER_JS,
+    )
+        .into_response()
 }
 
 /// The hand-written spec with `info.version` set to the running binary's version.
@@ -40,7 +64,7 @@ mod tests {
         let spec: serde_json::Value = serde_json::from_str(OPENAPI).expect("openapi.json is valid JSON");
         let documented: std::collections::BTreeSet<&str> =
             spec["paths"].as_object().expect("paths").keys().map(String::as_str).collect();
-        let pages = ["/", "/logo.svg", "/docs", "/openapi.json"];
+        let pages = ["/", "/logo.svg", "/docs", "/openapi.json", "/swagger-ui.css", "/swagger-ui-bundle.js"];
         let routed: std::collections::BTreeSet<&str> = include_str!("mod.rs")
             .split(".route(\"")
             .skip(1)
@@ -48,5 +72,21 @@ mod tests {
             .filter(|path| !pages.contains(path))
             .collect();
         assert_eq!(documented, routed);
+    }
+
+    #[test]
+    fn swagger_ui_uses_embedded_assets_instead_of_a_cdn() {
+        assert!(!DOCS.contains("cdn.jsdelivr.net"));
+        assert!(DOCS.contains("src=\"/swagger-ui-bundle.js\""));
+        assert!(DOCS.contains("href=\"/swagger-ui.css\""));
+    }
+
+    #[test]
+    fn admin_token_is_not_persisted_across_browser_sessions() {
+        for html in [INDEX, DOCS] {
+            assert!(!html.contains("localStorage"));
+            assert!(html.contains("sessionStorage"));
+        }
+        assert!(DOCS.contains("persistAuthorization: false"));
     }
 }

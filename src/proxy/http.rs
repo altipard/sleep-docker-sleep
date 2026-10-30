@@ -178,25 +178,23 @@ async fn proxy_request(
     let switching = resp.status() == StatusCode::SWITCHING_PROTOCOLS;
     strip_hop_by_hop(resp.headers_mut(), switching);
 
-    if switching {
-        if let Some(client_upgrade) = client_upgrade {
-            let server_upgrade = hyper::upgrade::on(&mut resp);
-            let name = handle.name().to_owned();
-            tokio::spawn(async move {
-                let _guard = guard;
-                match tokio::try_join!(client_upgrade, server_upgrade) {
-                    Ok((c, s)) => {
-                        let mut c = TokioIo::new(c);
-                        let mut s = TokioIo::new(s);
-                        if let Err(e) = tokio::io::copy_bidirectional(&mut c, &mut s).await {
-                            tracing::debug!(group = %name, "upgraded connection ended: {e}");
-                        }
+    if switching && let Some(client_upgrade) = client_upgrade {
+        let server_upgrade = hyper::upgrade::on(&mut resp);
+        let name = handle.name().to_owned();
+        tokio::spawn(async move {
+            let _guard = guard;
+            match tokio::try_join!(client_upgrade, server_upgrade) {
+                Ok((c, s)) => {
+                    let mut c = TokioIo::new(c);
+                    let mut s = TokioIo::new(s);
+                    if let Err(e) = tokio::io::copy_bidirectional(&mut c, &mut s).await {
+                        tracing::debug!(group = %name, "upgraded connection ended: {e}");
                     }
-                    Err(e) => tracing::warn!(group = %name, "upgrade failed: {e}"),
                 }
-            });
-            return resp.map(|b| b.boxed());
-        }
+                Err(e) => tracing::warn!(group = %name, "upgrade failed: {e}"),
+            }
+        });
+        return resp.map(|b| b.boxed());
     }
 
     resp.map(|body| {
@@ -206,7 +204,7 @@ async fn proxy_request(
 }
 
 /// Drop hop-by-hop headers, keeping `Connection`/`Upgrade` for a protocol switch.
-fn strip_hop_by_hop(headers: &mut hyper::HeaderMap, keep_upgrade: bool) {
+pub(super) fn strip_hop_by_hop(headers: &mut hyper::HeaderMap, keep_upgrade: bool) {
     let listed: Vec<String> = headers
         .get_all(hyper::header::CONNECTION)
         .iter()
