@@ -12,7 +12,24 @@
 
 Every [GitHub release](https://github.com/altipard/sleep-docker-sleep/releases) ships
 binaries for Linux (x86_64, aarch64) and macOS (Apple Silicon, Intel), plus an Ed25519
-signature and the release public key:
+signature and the release public key. The installer picks the right binary, verifies the
+signature against the pinned release key and installs it to `/usr/local/bin` (or
+`~/.local/bin` if that is not writable):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/altipard/sleep-docker-sleep/main/install.sh | sh
+```
+
+`SDS_INSTALL_DIR` sets the target directory, `SDS_VERSION` a release to install instead of the
+latest (0.4.1 and later). An existing `sds` is kept as `sds.previous`.
+
+The signature check needs OpenSSL 3. Without it (stock macOS ships LibreSSL, which cannot
+verify Ed25519), the installer checks the release's `SHA256SUMS` instead and says so. A
+checksum detects a corrupt download, but unlike the signature it does not detect a release
+that was replaced as a whole. A failed signature check never falls back to the checksum.
+Release 0.4.1 has no `SHA256SUMS` and needs OpenSSL 3 (`brew install openssl`).
+
+By hand, with the same files (also needs OpenSSL 3):
 
 ```bash
 base=https://github.com/altipard/sleep-docker-sleep/releases/latest/download
