@@ -81,3 +81,21 @@ fn status_without_daemon_fails_clearly() {
         .failure()
         .stderr(predicate::str::contains("cannot reach sds"));
 }
+
+#[test]
+fn top_demo_needs_a_terminal_and_no_daemon() {
+    // Fails on the missing terminal, not on a missing daemon or config.
+    sds()
+        .args(["top", "--demo", "--config", "/nonexistent/sds.toml"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("needs a terminal"));
+    // A daemon address from the environment (SDS_URL, SDS_TOKEN) does not get in the way.
+    sds()
+        .args(["top", "--demo"])
+        .env("SDS_URL", "http://127.0.0.1:1")
+        .env("SDS_TOKEN", "x")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("needs a terminal"));
+}

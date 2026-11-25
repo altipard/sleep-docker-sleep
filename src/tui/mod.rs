@@ -1,6 +1,10 @@
-//! Terminal dashboard for `sds run` (interactive sessions only).
+//! Terminal dashboard for `sds run`, `sds top` and `sds top --demo` (interactive sessions only).
 
-use std::collections::VecDeque;
+mod demo;
+mod detail;
+mod history;
+
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -9,19 +13,29 @@ use std::time::Duration;
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap};
 use tokio_util::sync::CancellationToken;
 
-use crate::controller::{GroupSnapshot, Registry, StateKind, epoch_ms};
+use crate::controller::{EventKind, GroupSnapshot, Registry, SdsEvent, StateKind, epoch_ms};
+pub use demo::DemoSource;
+use history::{Countdown, RateHistory, bar_cells, countdown, fmt_compact};
 
 /// Where the dashboard gets its data from: the in-process registry (`sds run`) or a
 /// running daemon's API (`sds top`).
 pub trait Source: Send {
     fn snapshots(&self) -> Vec<GroupSnapshot>;
     fn logs(&self) -> Vec<String>;
+    /// Structured recent events of all groups, oldest first (the detail panel filters them).
+    fn events(&self) -> Vec<SdsEvent> {
+        Vec::new()
+    }
+    /// The source's idea of "now" in epoch milliseconds; countdowns and ages are relative to it.
+    fn now_ms(&self) -> u64 {
+        epoch_ms()
+    }
     fn wake(&self, group: &str);
     fn sleep(&self, group: &str);
     /// `true` puts the group on hold, `false` releases it.
@@ -37,6 +51,21 @@ pub trait Source: Send {
     fn supports_detach(&self) -> bool {
         false
     }
+    /// Simulated data: the UI marks itself so it cannot be mistaken for a real daemon.
+    fn is_demo(&self) -> bool {
+        false
+    }
+}
+
+/// One line of the log pane for a structured event.
+fn format_event(ev: &SdsEvent) -> String {
+    let secs = ev.ts_ms / 1000;
+    let t = humantime::format_rfc3339_seconds(std::time::UNIX_EPOCH + Duration::from_secs(secs));
+    let level = match ev.kind {
+        EventKind::StartFailed | EventKind::StopFailed | EventKind::Warning => " WARN",
+        _ => " INFO",
+    };
+    format!("{t}{level} {} [{}] {}", ev.group, format!("{:?}", ev.kind).to_lowercase(), ev.message)
 }
 
 /// In-process source for `sds run`.
@@ -52,6 +81,9 @@ impl Source for LocalSource {
     }
     fn logs(&self) -> Vec<String> {
         self.logs.lines()
+    }
+    fn events(&self) -> Vec<SdsEvent> {
+        self.registry.bus().recent()
     }
     fn wake(&self, group: &str) {
         if let Some(h) = self.registry.get(group) {
@@ -140,34 +172,10 @@ impl Source for RemoteSource {
         self.latest.lock().ok().and_then(|l| l.as_ref().map(|s| s.groups.clone())).unwrap_or_default()
     }
     fn logs(&self) -> Vec<String> {
-        self.latest
-            .lock()
-            .ok()
-            .and_then(|l| {
-                l.as_ref().map(|s| {
-                    s.events
-                        .iter()
-                        .map(|ev| {
-                            let secs = ev.ts_ms / 1000;
-                            let t =
-                                humantime::format_rfc3339_seconds(std::time::UNIX_EPOCH + Duration::from_secs(secs));
-                            let level = match ev.kind {
-                                crate::controller::EventKind::StartFailed
-                                | crate::controller::EventKind::StopFailed
-                                | crate::controller::EventKind::Warning => " WARN",
-                                _ => " INFO",
-                            };
-                            format!(
-                                "{t}{level} {} [{}] {}",
-                                ev.group,
-                                format!("{:?}", ev.kind).to_lowercase(),
-                                ev.message
-                            )
-                        })
-                        .collect()
-                })
-            })
-            .unwrap_or_default()
+        self.events().iter().map(format_event).collect()
+    }
+    fn events(&self) -> Vec<SdsEvent> {
+        self.latest.lock().ok().and_then(|l| l.as_ref().map(|s| s.events.clone())).unwrap_or_default()
     }
     fn wake(&self, group: &str) {
         let _ = self.actions.send((Action::Wake, group.to_owned()));
@@ -276,11 +284,54 @@ pub struct Dashboard {
     table: TableState,
     /// `q` was pressed once in a session that owns the daemon; waiting for confirmation.
     confirm_quit: bool,
+    /// Requests per second per group, derived from `requests_total` between polls.
+    history: HashMap<String, RateHistory>,
+}
+
+/// Below this width the detail panel goes under the table instead of next to it.
+const WIDE: u16 = 110;
+/// Rows of the log pane; it is dropped when the terminal is too short to spare them.
+const LOG_ROWS: u16 = 10;
+
+struct Areas {
+    header: Rect,
+    table: Rect,
+    detail: Rect,
+    log: Option<Rect>,
+    footer: Rect,
+}
+
+fn areas(area: Rect, groups: usize) -> Areas {
+    let [header, body, footer] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    // The panel replaces most of what the log pane showed per group, so on 80x24 it gets
+    // the space; with 30+ rows the log pane comes back.
+    let log_rows = match body.height {
+        0..28 => 0,
+        28..36 => LOG_ROWS - 3,
+        _ => (body.height / 3).clamp(LOG_ROWS, 16),
+    };
+    let (main, log) = if log_rows > 0 {
+        let [main, log] = Layout::vertical([Constraint::Min(0), Constraint::Length(log_rows)]).areas(body);
+        (main, Some(log))
+    } else {
+        (body, None)
+    };
+    let (table, detail) = if area.width >= WIDE {
+        let [table, detail] = Layout::horizontal([Constraint::Length(68), Constraint::Min(30)]).areas(main);
+        (table, detail)
+    } else {
+        let want = u16::try_from(groups).unwrap_or(u16::MAX).saturating_add(3);
+        let rows = want.clamp(5, (main.height / 2).max(5));
+        let [table, detail] = Layout::vertical([Constraint::Length(rows), Constraint::Min(0)]).areas(main);
+        (table, detail)
+    };
+    Areas { header, table, detail, log, footer }
 }
 
 impl Dashboard {
     pub fn new(source: Box<dyn Source>) -> Self {
-        Self { source, table: TableState::default().with_selected(0), confirm_quit: false }
+        Self { source, table: TableState::default().with_selected(0), confirm_quit: false, history: HashMap::new() }
     }
 
     /// Blocking event loop; returns when the user quits or detaches, or `cancel` fires.
@@ -298,47 +349,50 @@ impl Dashboard {
             }
             let groups = self.source.snapshots();
             let logs = self.source.logs();
+            self.observe(&groups, self.source.now_ms());
             terminal.draw(|f| self.draw(f, &groups, &logs))?;
             if event::poll(Duration::from_millis(500))?
                 && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+                && let Some(exit) = self.handle_key(key.code, key.modifiers, &groups)
             {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                let selected = self.table.selected().and_then(|i| groups.get(i));
-                if self.confirm_quit {
-                    self.confirm_quit = false;
-                    if matches!(key.code, KeyCode::Char('q')) {
-                        return Ok(Exit::Quit);
-                    }
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc if self.source.supports_detach() => self.confirm_quit = true,
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(Exit::Quit),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(Exit::Quit),
-                    KeyCode::Char('x') | KeyCode::Char('d') => return Ok(Exit::Detach),
-                    KeyCode::Down | KeyCode::Char('j') => self.select(groups.len(), 1),
-                    KeyCode::Up | KeyCode::Char('k') => self.select(groups.len(), -1),
-                    KeyCode::Char('w') => {
-                        if let Some(g) = selected {
-                            self.source.wake(&g.name);
-                        }
-                    }
-                    KeyCode::Char('s') => {
-                        if let Some(g) = selected {
-                            self.source.sleep(&g.name);
-                        }
-                    }
-                    KeyCode::Char('h') => {
-                        if let Some(g) = selected {
-                            self.source.set_hold(&g.name, !g.held);
-                        }
-                    }
-                    _ => {}
-                }
+                return Ok(exit);
             }
         }
+    }
+
+    /// React to one key press; `Some` ends the dashboard.
+    fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers, groups: &[GroupSnapshot]) -> Option<Exit> {
+        let selected = self.table.selected().and_then(|i| groups.get(i));
+        if self.confirm_quit {
+            self.confirm_quit = false;
+            return matches!(code, KeyCode::Char('q')).then_some(Exit::Quit);
+        }
+        match code {
+            KeyCode::Char('q') | KeyCode::Esc if self.source.supports_detach() => self.confirm_quit = true,
+            KeyCode::Char('q') | KeyCode::Esc => return Some(Exit::Quit),
+            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => return Some(Exit::Quit),
+            KeyCode::Char('x') | KeyCode::Char('d') => return Some(Exit::Detach),
+            KeyCode::Down | KeyCode::Char('j') => self.select(groups.len(), 1),
+            KeyCode::Up | KeyCode::Char('k') => self.select(groups.len(), -1),
+            KeyCode::Char('w') => {
+                if let Some(g) = selected {
+                    self.source.wake(&g.name);
+                }
+            }
+            KeyCode::Char('s') => {
+                if let Some(g) = selected {
+                    self.source.sleep(&g.name);
+                }
+            }
+            KeyCode::Char('h') => {
+                if let Some(g) = selected {
+                    self.source.set_hold(&g.name, !g.held);
+                }
+            }
+            _ => {}
+        }
+        None
     }
 
     fn select(&mut self, len: usize, delta: isize) {
@@ -351,54 +405,113 @@ impl Dashboard {
         self.table.select(Some(next));
     }
 
+    /// Fold the latest counters into the per-group request history. Groups that vanished
+    /// lose their history; while the source is unreachable the counters are stale, so no
+    /// bucket is booked and the baseline is dropped.
+    fn observe(&mut self, groups: &[GroupSnapshot], now_ms: u64) {
+        self.history.retain(|name, _| groups.iter().any(|g| &g.name == name));
+        let reachable = self.source.problem().is_none();
+        for g in groups {
+            let history = self.history.entry(g.name.clone()).or_default();
+            if reachable {
+                history.observe(now_ms, g.requests_total);
+            } else {
+                history.pause();
+            }
+        }
+    }
+
     fn draw(&mut self, f: &mut Frame, groups: &[GroupSnapshot], logs: &[String]) {
-        let area = f.area();
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(6), Constraint::Length(10), Constraint::Length(1)])
-            .split(area);
-        self.draw_header(f, chunks[0], groups);
-        self.draw_table(f, chunks[1], groups);
-        draw_logs(f, chunks[2], logs);
+        let now = self.source.now_ms();
+        let events = self.source.events();
+        let a = areas(f.area(), groups.len());
+        self.draw_header(f, a.header, groups);
+        self.draw_table(f, a.table, groups, now);
+        let selected = self.table.selected().and_then(|i| groups.get(i));
+        let history = selected.and_then(|g| self.history.get(&g.name));
+        detail::draw_detail(f, a.detail, selected, history, &events, now);
+        if let Some(log) = a.log {
+            draw_logs(f, log, logs);
+        }
         if self.confirm_quit {
+            let text = if a.footer.width >= 105 {
+                " press q again to STOP THE DAEMON (sleeping groups cannot wake without it), any other key to cancel "
+            } else {
+                " press q again to STOP THE DAEMON, any other key to cancel "
+            };
             let prompt = Line::from(vec![
                 Span::styled(" q ", Style::default().add_modifier(Modifier::REVERSED).fg(Color::Red)),
-                Span::styled(
-                    " press q again to STOP THE DAEMON (sleeping groups cannot wake without it), any other key to cancel ",
-                    Style::default().fg(Color::Red),
-                ),
+                Span::styled(text, Style::default().fg(Color::Red)),
             ]);
-            f.render_widget(Paragraph::new(prompt), chunks[3]);
+            f.render_widget(Paragraph::new(prompt), a.footer);
             return;
         }
+        f.render_widget(Paragraph::new(self.help_line(a.footer.width)), a.footer);
+    }
+
+    fn help_line(&self, width: u16) -> Line<'static> {
+        let wide = width >= 100;
+        let detach = self.source.supports_detach();
+        let key = |k: &'static str| Span::styled(format!(" {k} "), Style::default().add_modifier(Modifier::REVERSED));
         let mut help = vec![
-            Span::styled(" q ", Style::default().add_modifier(Modifier::REVERSED)),
-            Span::raw(if self.source.supports_detach() { " stop daemon  " } else { " detach  " }),
+            key("q"),
+            Span::raw(if detach {
+                " stop daemon  "
+            } else if self.source.is_demo() {
+                " quit  "
+            } else {
+                " detach  "
+            }),
         ];
-        if self.source.supports_detach() {
-            help.push(Span::styled(" x ", Style::default().add_modifier(Modifier::REVERSED)));
-            help.push(Span::raw(" detach, keep running headless  "));
+        if detach {
+            help.push(key("x"));
+            help.push(Span::raw(if wide { " detach, keep running headless  " } else { " detach  " }));
         }
         help.extend([
-            Span::styled(" ↑↓ ", Style::default().add_modifier(Modifier::REVERSED)),
+            key("↑↓"),
             Span::raw(" select  "),
-            Span::styled(" w ", Style::default().add_modifier(Modifier::REVERSED)),
+            key("w"),
             Span::raw(" wake  "),
-            Span::styled(" s ", Style::default().add_modifier(Modifier::REVERSED)),
+            key("s"),
             Span::raw(" sleep  "),
-            Span::styled(" h ", Style::default().add_modifier(Modifier::REVERSED)),
-            Span::raw(" hold/release  "),
-            Span::styled(format!(" {} ", self.source.location()), Style::default().fg(Color::DarkGray)),
+            key("h"),
+            Span::raw(if wide { " hold/release  " } else { " hold  " }),
         ]);
-        f.render_widget(Paragraph::new(Line::from(help)), chunks[3]);
+        let location = self.source.location();
+        if self.source.is_demo() {
+            help.push(Span::styled(format!(" {location} "), Style::default().fg(Color::Yellow)));
+            return Line::from(help);
+        }
+        // A cut-off URL is useless: show the whole text, at least the URL, or nothing.
+        let used: usize = help.iter().map(Span::width).sum();
+        let url = location.rsplit(' ').next().unwrap_or_default().to_owned();
+        let style = Style::default().fg(Color::DarkGray);
+        if let Some(text) = [location, url]
+            .into_iter()
+            .map(|t| Span::styled(format!(" {t} "), style))
+            .find(|s| used + s.width() <= usize::from(width))
+        {
+            help.push(text);
+        }
+        Line::from(help)
     }
 
     fn draw_header(&self, f: &mut Frame, area: Rect, groups: &[GroupSnapshot]) {
         let running = groups.iter().filter(|g| g.state == StateKind::Running).count();
         let asleep = groups.iter().filter(|g| g.state == StateKind::Stopped).count();
         let failed = groups.iter().filter(|g| g.state == StateKind::Failed).count();
-        let line = Line::from(vec![
-            Span::styled(" sleep-docker-sleep ", Style::default().add_modifier(Modifier::BOLD)),
+        let mut spans = Vec::new();
+        if self.source.is_demo() {
+            spans.push(Span::styled(
+                " DEMO ",
+                Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ));
+        }
+        spans.extend([
+            Span::styled(
+                if area.width >= 100 { " sleep-docker-sleep " } else { " sds " },
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
             Span::raw(format!("v{}  ", crate::VERSION)),
             Span::styled(format!("{running} running"), Style::default().fg(Color::Green)),
             Span::raw("  "),
@@ -408,81 +521,71 @@ impl Dashboard {
                 format!("{failed} failed"),
                 Style::default().fg(if failed > 0 { Color::Red } else { Color::DarkGray }),
             ),
-            Span::raw("  "),
-            Span::styled(format!("docker {}", self.source.docker_endpoint()), Style::default().fg(Color::DarkGray)),
         ]);
-        let line = match self.source.problem() {
-            Some(p) => {
-                let mut spans = line.spans;
-                spans.push(Span::styled(format!("  ⚠ {p}"), Style::default().fg(Color::Red)));
-                Line::from(spans)
+        if let Some(p) = self.source.problem() {
+            spans.push(Span::styled(format!("  ⚠ {p}"), Style::default().fg(Color::Red)));
+        }
+        // The demo has no Docker; the badge and the footer say so. Otherwise the endpoint is
+        // shown whole or not at all, and never pushes a problem off the line.
+        if !self.source.is_demo() {
+            let endpoint = Span::styled(
+                format!("  docker {}", self.source.docker_endpoint()),
+                Style::default().fg(Color::DarkGray),
+            );
+            let used: usize = spans.iter().map(Span::width).sum();
+            if used + endpoint.width() <= usize::from(area.width) {
+                spans.push(endpoint);
             }
-            None => line,
-        };
-        f.render_widget(Paragraph::new(line), area);
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
-    fn draw_table(&mut self, f: &mut Frame, area: Rect, groups: &[GroupSnapshot]) {
-        let now = epoch_ms();
-        let header = Row::new(["group", "state", "containers", "req", "last request", "sleeps in", "notes"])
+    fn draw_table(&mut self, f: &mut Frame, area: Rect, groups: &[GroupSnapshot], now: u64) {
+        let title = if self.source.is_demo() { " groups (demo data) " } else { " groups " };
+        let header = Row::new(["group", "state", "up", "last request", "sleeps in"])
             .style(Style::default().fg(Color::DarkGray))
             .height(1);
         let rows: Vec<Row> = groups
             .iter()
             .map(|g| {
-                let state_style = match g.state {
-                    StateKind::Running => Style::default().fg(Color::Green),
-                    StateKind::Starting | StateKind::Stopping => Style::default().fg(Color::Yellow),
-                    StateKind::Failed => Style::default().fg(Color::Red),
-                    StateKind::Stopped => Style::default().fg(Color::DarkGray),
-                };
-                let containers = g
-                    .members
-                    .iter()
-                    .map(|m| format!("{}{}", if m.running { "●" } else { "○" }, m.name))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let mut notes = g.warnings.clone();
-                if let Some(e) = &g.last_error {
-                    notes.push(e.clone());
+                let mut name = vec![Span::styled(g.name.clone(), Style::default().add_modifier(Modifier::BOLD))];
+                // Details of warnings and errors are in the panel; the table only flags them.
+                if g.last_error.is_some() {
+                    name.push(Span::styled(" !", Style::default().fg(Color::Red)));
+                } else if !g.warnings.is_empty() {
+                    name.push(Span::styled(" !", Style::default().fg(Color::Yellow)));
                 }
-                let height = u16::try_from(notes.len().max(1)).unwrap_or(1);
+                let up = g.members.iter().filter(|m| m.running).count();
                 Row::new(vec![
-                    Cell::from(g.name.clone()).bold(),
+                    Cell::from(Line::from(name)),
                     Cell::from(if g.held { format!("{} (held)", g.state) } else { g.state.to_string() })
-                        .style(state_style),
-                    Cell::from(containers),
-                    Cell::from(g.requests_total.to_string()),
-                    Cell::from(crate::cli::fmt_age(g.last_activity_ms, now)),
+                        .style(Style::default().fg(detail::state_color(g.state))),
+                    Cell::from(format!("{up}/{}", g.members.len())),
                     Cell::from(
-                        g.sleeps_in_ms(now)
-                            .map(|ms| humantime::format_duration(Duration::from_secs(ms / 1000)).to_string())
-                            .unwrap_or_else(|| "—".into()),
+                        g.last_activity_ms
+                            .map_or_else(|| "—".to_owned(), |t| format!("{} ago", fmt_compact(now.saturating_sub(t)))),
                     ),
-                    Cell::from(notes.join("\n")).style(Style::default().fg(Color::Yellow)),
+                    Cell::from(sleeps_in_cell(g, now)),
                 ])
-                .height(height)
             })
             .collect();
         let widths = [
-            Constraint::Min(14),
+            Constraint::Min(12),
             Constraint::Length(15),
-            Constraint::Min(20),
-            Constraint::Length(6),
-            Constraint::Length(16),
-            Constraint::Length(12),
-            Constraint::Min(16),
+            Constraint::Length(5),
+            Constraint::Length(13),
+            Constraint::Length(15),
         ];
         let table = Table::new(rows, widths)
             .header(header)
-            .block(Block::default().borders(Borders::ALL).title(" groups "))
+            .block(Block::default().borders(Borders::ALL).title(title))
             .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
             .highlight_symbol("▶ ");
         if groups.is_empty() {
             let msg = Paragraph::new(
                 "no groups discovered yet — label containers with sds.enable=true or add [groups.*] to sds.toml",
             )
-            .block(Block::default().borders(Borders::ALL).title(" groups "))
+            .block(Block::default().borders(Borders::ALL).title(title))
             .wrap(Wrap { trim: true });
             f.render_widget(msg, area);
             return;
@@ -491,6 +594,23 @@ impl Dashboard {
             self.table.select(Some(0));
         }
         f.render_stateful_widget(table, area, &mut self.table);
+    }
+}
+
+/// Mini countdown bar plus the time left, for the table.
+fn sleeps_in_cell(g: &GroupSnapshot, now: u64) -> Line<'static> {
+    const BAR: usize = 6;
+    match countdown(g, now) {
+        Countdown::Running { remaining_ms, ratio, .. } => {
+            let filled = bar_cells(ratio, BAR);
+            Line::from(vec![
+                Span::styled("█".repeat(filled), Style::default().fg(detail::ratio_color(ratio))),
+                Span::styled("░".repeat(BAR - filled), Style::default().fg(Color::DarkGray)),
+                Span::raw(format!(" {}", fmt_compact(remaining_ms))),
+            ])
+        }
+        Countdown::Held => Line::styled("held", Style::default().fg(Color::DarkGray)),
+        Countdown::Inactive => Line::raw("—"),
     }
 }
 
@@ -522,6 +642,24 @@ mod tests {
         groups: Vec<GroupSnapshot>,
         logs: Vec<String>,
         problem: Option<String>,
+    }
+
+    /// Renders `dashboard` into a `width` x `height` terminal and returns the screen as lines.
+    fn render(dashboard: &mut Dashboard, width: u16, height: u16, groups: &[GroupSnapshot]) -> Vec<String> {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        let logs = dashboard.source.logs();
+        terminal.draw(|frame| dashboard.draw(frame, groups, &logs)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect::<String>().trim_end().to_owned())
+            .collect()
+    }
+
+    fn demo_dashboard() -> (Dashboard, Arc<std::sync::atomic::AtomicU64>) {
+        let clock = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let c = Arc::clone(&clock);
+        let source = DemoSource::with_clock(Box::new(move || c.load(std::sync::atomic::Ordering::Relaxed)));
+        (Dashboard::new(Box::new(source)), clock)
     }
 
     impl Source for FakeSource {
@@ -583,6 +721,8 @@ mod tests {
         let mut dashboard = Dashboard::new(Box::new(source));
         dashboard.select(groups.len(), 1);
         dashboard.select(groups.len(), -2);
+        assert_eq!(dashboard.table.selected(), Some(4));
+        dashboard.select(groups.len(), 1);
         let backend = ratatui::backend::TestBackend::new(140, 35);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
@@ -592,7 +732,9 @@ mod tests {
         assert!(content.contains("shop"));
         assert!(content.contains("stopped (held)"));
         assert!(content.contains("daemon unreachable"));
+        // Warnings and errors moved from the table into the panel of the selected group.
         assert!(content.contains("warning text"));
+        assert!(content.contains("error text"));
         assert!(content.contains("mock://docker"));
 
         dashboard.confirm_quit = true;
@@ -632,5 +774,308 @@ mod tests {
         source.set_hold("missing", true);
         assert!(source.logs().is_empty());
         source.registry.shutdown().await;
+    }
+
+    fn busy_groups() -> Vec<GroupSnapshot> {
+        let mut shop = test_support::snapshot("shop", StateKind::Running);
+        shop.warnings.push("container `web` sets different sds.* values than `db`; the first one wins".into());
+        shop.last_error = Some("wake-up failed: container `db` is unhealthy".into());
+        shop.settings.idle_timeout = Duration::from_secs(100);
+        shop.members.push(crate::controller::MemberSnapshot {
+            name: "db".into(),
+            id: "ba9876543210".into(),
+            running: false,
+            health: crate::docker::HealthState::None,
+        });
+        let mut db = test_support::snapshot("db", StateKind::Stopped);
+        db.held = true;
+        vec![shop, db, test_support::snapshot("blog", StateKind::Failed)]
+    }
+
+    #[test]
+    fn narrow_terminal_shows_table_and_panel_stacked_without_log() {
+        let groups = busy_groups();
+        let source = FakeSource { groups: groups.clone(), logs: vec![" INFO log line".into()], problem: None };
+        let mut dashboard = Dashboard::new(Box::new(source));
+        let screen = render(&mut dashboard, 80, 24, &groups);
+        let text = screen.join("\n");
+        assert_eq!(screen.len(), 24);
+        assert!(screen.iter().all(|l| l.chars().count() <= 80));
+        // Table on top (group names, counts, mini bar), panel below it for the selected group.
+        assert!(text.contains("groups") && text.contains("shop !") && text.contains("1/2"), "{text}");
+        let table_end = screen.iter().position(|l| l.contains("shop") && l.contains("running")).unwrap();
+        let panel_start = screen.iter().position(|l| l.starts_with("┌ shop")).unwrap();
+        assert!(panel_start > table_end, "{text}");
+        for want in ["sleeps in", "requests", "! container `web`", "✗ wake-up failed", "● app", "○ db"] {
+            assert!(text.contains(want), "missing `{want}` in\n{text}");
+        }
+        // 24 rows have no spare room for the log pane; the footer keeps the keys readable.
+        assert!(!text.contains("log line"));
+        assert!(screen[23].contains("hold") && screen[23].contains("stop daemon"), "{}", screen[23]);
+    }
+
+    #[test]
+    fn header_and_footer_show_addresses_whole_or_not_at_all() {
+        struct Located(FakeSource);
+        impl Source for Located {
+            fn snapshots(&self) -> Vec<GroupSnapshot> {
+                self.0.snapshots()
+            }
+            fn logs(&self) -> Vec<String> {
+                Vec::new()
+            }
+            fn wake(&self, _group: &str) {}
+            fn sleep(&self, _group: &str) {}
+            fn set_hold(&self, _group: &str, _held: bool) {}
+            fn docker_endpoint(&self) -> String {
+                "unix:///var/run/docker.sock".into()
+            }
+            fn location(&self) -> String {
+                "attached to http://127.0.0.1:9900".into()
+            }
+            fn problem(&self) -> Option<String> {
+                self.0.problem.clone()
+            }
+        }
+        let groups = busy_groups();
+        for problem in [None, Some("daemon unreachable".to_owned())] {
+            for width in 20..180u16 {
+                let fake = FakeSource { groups: groups.clone(), logs: vec![], problem: problem.clone() };
+                let mut dashboard = Dashboard::new(Box::new(Located(fake)));
+                let screen = render(&mut dashboard, width, 24, &groups);
+                let (header, footer) = (&screen[0], &screen[23]);
+                assert!(!header.contains("docker u") || header.ends_with("docker.sock"), "{width}: {header}");
+                assert!(!footer.contains("http") || footer.ends_with(":9900"), "{width}: {footer}");
+                if problem.is_some() && width >= 80 {
+                    assert!(header.contains("daemon unreachable"), "{width}: {header}");
+                }
+            }
+        }
+        let fake = FakeSource { groups: groups.clone(), logs: vec![], problem: None };
+        let screen = render(&mut Dashboard::new(Box::new(Located(fake))), 80, 24, &groups);
+        assert!(screen[23].ends_with("http://127.0.0.1:9900"), "{}", screen[23]);
+    }
+
+    #[test]
+    fn quit_confirmation_fits_80_columns() {
+        let groups = busy_groups();
+        let fake = FakeSource { groups: groups.clone(), logs: vec![], problem: None };
+        let mut dashboard = Dashboard::new(Box::new(fake));
+        dashboard.confirm_quit = true;
+        for width in [80, 104, 105, 140] {
+            let screen = render(&mut dashboard, width, 24, &groups);
+            assert!(screen[23].contains("STOP THE DAEMON"), "{}", screen[23]);
+            assert!(screen[23].ends_with("any other key to cancel"), "{width}: {}", screen[23]);
+        }
+    }
+
+    #[test]
+    fn wide_terminal_puts_the_panel_next_to_the_table_and_keeps_the_log() {
+        let groups = busy_groups();
+        let source = FakeSource { groups: groups.clone(), logs: vec![" INFO log line".into()], problem: None };
+        let mut dashboard = Dashboard::new(Box::new(source));
+        let screen = render(&mut dashboard, 140, 40, &groups);
+        let text = screen.join("\n");
+        let row = screen.iter().find(|l| l.contains("shop !")).unwrap();
+        // The same row carries the table entry and the panel (`state`/`for` summary line).
+        let header = screen.iter().find(|l| l.contains("groups") && l.contains("shop")).unwrap();
+        assert!(header.find("groups").unwrap() < header.find("shop").unwrap());
+        assert!(row.contains("running"));
+        assert!(text.contains("log line"), "{text}");
+        assert!(screen.iter().any(|l| l.contains("state") && l.contains("running") && l.contains("woke")));
+        // Moving the selection changes the panel.
+        dashboard.select(groups.len(), 1);
+        let text = render(&mut dashboard, 140, 40, &groups).join("\n");
+        assert!(text.contains("on hold, requests do not wake it"), "{text}");
+        assert!(!text.contains("✗ wake-up failed"));
+    }
+
+    #[test]
+    fn dashboard_survives_tiny_and_empty_terminals() {
+        let groups = busy_groups();
+        for (w, h) in [(0, 0), (1, 1), (10, 3), (20, 5), (30, 8), (79, 23), (109, 29), (110, 30), (200, 6), (60, 100)] {
+            for selected in [0, 2] {
+                let source =
+                    FakeSource { groups: groups.clone(), logs: vec![" WARN x".into()], problem: Some("down".into()) };
+                let mut dashboard = Dashboard::new(Box::new(source));
+                dashboard.table.select(Some(selected));
+                render(&mut dashboard, w, h, &groups);
+                dashboard.confirm_quit = true;
+                render(&mut dashboard, w, h, &groups);
+            }
+            let mut empty = Dashboard::new(Box::new(FakeSource { groups: vec![], logs: vec![], problem: None }));
+            let screen = render(&mut empty, w, h, &[]);
+            if w >= 100 && h >= 20 {
+                assert!(screen.join("\n").contains("nothing selected"));
+            }
+        }
+    }
+
+    #[test]
+    fn layout_gives_the_panel_the_space_and_brings_the_log_back_when_tall() {
+        let small = areas(Rect::new(0, 0, 80, 24), 7);
+        assert!(small.log.is_none());
+        assert_eq!(small.table.width, 80);
+        assert!(small.detail.y >= small.table.y + small.table.height && small.detail.height >= 8);
+        let tall_narrow = areas(Rect::new(0, 0, 80, 50), 7);
+        assert!(tall_narrow.log.is_some_and(|l| l.height >= LOG_ROWS));
+        let mid = areas(Rect::new(0, 0, 80, 32), 7);
+        assert!(mid.log.is_some_and(|l| l.height < LOG_ROWS));
+        let wide = areas(Rect::new(0, 0, 140, 40), 7);
+        assert_eq!(wide.table.y, wide.detail.y);
+        assert!(wide.detail.x >= wide.table.x + wide.table.width);
+        assert!(wide.log.is_some());
+        // Many groups: the table never takes more than half of the stacked area.
+        let many = areas(Rect::new(0, 0, 80, 24), 200);
+        assert!(many.table.height <= 11);
+        // Degenerate sizes still yield rectangles.
+        let _ = areas(Rect::new(0, 0, 0, 0), 0);
+    }
+
+    #[test]
+    fn history_follows_polls_resets_and_group_changes() {
+        let mut dashboard = Dashboard::new(Box::new(FakeSource { groups: vec![], logs: vec![], problem: None }));
+        let mut groups = busy_groups();
+        let set = |groups: &mut Vec<GroupSnapshot>, name: &str, total: u64| {
+            groups.iter_mut().find(|g| g.name == name).unwrap().requests_total = total;
+        };
+        set(&mut groups, "shop", 100);
+        dashboard.observe(&groups, 0);
+        set(&mut groups, "shop", 105);
+        dashboard.observe(&groups, 500);
+        dashboard.observe(&groups, 1_000);
+        // Daemon restart: counter is lower than before.
+        set(&mut groups, "shop", 2);
+        dashboard.observe(&groups, 2_000);
+        assert_eq!(dashboard.history["shop"].samples(), vec![5, 2]);
+        // A group disappears: its history goes; it comes back without a spike.
+        let shop = groups.remove(0);
+        dashboard.observe(&groups, 3_000);
+        assert!(!dashboard.history.contains_key("shop"));
+        groups.insert(0, GroupSnapshot { requests_total: 9_999, ..shop });
+        dashboard.observe(&groups, 4_000);
+        dashboard.observe(&groups, 5_000);
+        assert_eq!(dashboard.history["shop"].samples(), vec![0]);
+        assert_eq!(dashboard.history.len(), 3);
+    }
+
+    #[test]
+    fn unreachable_source_books_no_requests() {
+        let source = FakeSource { groups: vec![], logs: vec![], problem: Some("down".into()) };
+        let mut dashboard = Dashboard::new(Box::new(source));
+        let mut groups = busy_groups();
+        dashboard.observe(&groups, 0);
+        dashboard.observe(&groups, 1_000);
+        assert!(dashboard.history["shop"].samples().is_empty());
+        groups[0].requests_total += 50;
+        dashboard.observe(&groups, 2_000);
+        assert!(dashboard.history["shop"].samples().is_empty());
+    }
+
+    #[test]
+    fn panel_shows_sparkline_once_requests_arrive() {
+        let (mut dashboard, clock) = demo_dashboard();
+        let busiest = |d: &Dashboard| d.source.snapshots().into_iter().max_by_key(|g| g.requests_total).unwrap().name;
+        let name = busiest(&dashboard);
+        for step in 0..30u64 {
+            clock.store(step * 1_000, std::sync::atomic::Ordering::Relaxed);
+            let groups = dashboard.source.snapshots();
+            dashboard.observe(&groups, dashboard.source.now_ms());
+        }
+        let groups = dashboard.source.snapshots();
+        let index = groups.iter().position(|g| g.name == name).unwrap();
+        dashboard.table.select(Some(index));
+        let text = render(&mut dashboard, 140, 40, &groups).join("\n");
+        assert!(text.contains("/s now") && text.contains("/s peak"), "{text}");
+        assert!(text.contains('·') || text.contains('▁') || text.contains('█'));
+    }
+
+    #[test]
+    fn demo_dashboard_is_marked_and_drives_the_simulation_with_keys() {
+        let (mut dashboard, _clock) = demo_dashboard();
+        for (w, h) in [(80, 24), (140, 40)] {
+            let groups = dashboard.source.snapshots();
+            let screen = render(&mut dashboard, w, h, &groups);
+            assert!(screen[0].starts_with(" DEMO "), "{}", screen[0]);
+            assert!(!screen[0].contains("docker simulated"));
+            assert!(screen.join("\n").contains("groups (demo data)"));
+            assert!(screen[h as usize - 1].contains("demo"), "{}", screen[h as usize - 1]);
+        }
+        let none = KeyModifiers::NONE;
+        let groups = dashboard.source.snapshots();
+        let first_stopped = groups.iter().position(|g| g.state == StateKind::Stopped && !g.held).unwrap();
+        dashboard.table.select(Some(first_stopped));
+        assert_eq!(dashboard.handle_key(KeyCode::Char('w'), none, &groups), None);
+        assert_eq!(dashboard.source.snapshots()[first_stopped].state, StateKind::Starting);
+
+        let running = groups.iter().position(|g| g.state == StateKind::Running).unwrap();
+        dashboard.table.select(Some(running));
+        dashboard.handle_key(KeyCode::Char('s'), none, &groups);
+        assert_eq!(dashboard.source.snapshots()[running].state, StateKind::Stopping);
+
+        let held = groups.iter().position(|g| g.held).unwrap();
+        dashboard.table.select(Some(held));
+        dashboard.handle_key(KeyCode::Char('h'), none, &groups);
+        assert!(!dashboard.source.snapshots()[held].held);
+        let groups = dashboard.source.snapshots();
+        dashboard.handle_key(KeyCode::Char('h'), none, &groups);
+        assert!(dashboard.source.snapshots()[held].held);
+
+        // Navigation and quitting: a source without detach quits at once.
+        dashboard.handle_key(KeyCode::Down, none, &groups);
+        assert_eq!(dashboard.table.selected(), Some((held + 1) % groups.len()));
+        dashboard.handle_key(KeyCode::Char('k'), none, &groups);
+        assert_eq!(dashboard.table.selected(), Some(held));
+        assert_eq!(dashboard.handle_key(KeyCode::Char('q'), none, &groups), Some(Exit::Quit));
+        assert_eq!(dashboard.handle_key(KeyCode::Esc, none, &groups), Some(Exit::Quit));
+        assert_eq!(dashboard.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL, &groups), Some(Exit::Quit));
+    }
+
+    #[test]
+    fn keys_keep_their_meaning_and_quit_needs_confirmation_when_the_daemon_is_owned() {
+        let groups = busy_groups();
+        let source = FakeSource { groups: groups.clone(), logs: vec![], problem: None };
+        let mut dashboard = Dashboard::new(Box::new(source));
+        let none = KeyModifiers::NONE;
+        assert_eq!(dashboard.handle_key(KeyCode::Char('q'), none, &groups), None);
+        assert!(dashboard.confirm_quit);
+        assert_eq!(dashboard.handle_key(KeyCode::Char('j'), none, &groups), None, "any other key only cancels");
+        assert!(!dashboard.confirm_quit);
+        assert_eq!(dashboard.table.selected(), Some(0));
+        dashboard.handle_key(KeyCode::Esc, none, &groups);
+        assert_eq!(dashboard.handle_key(KeyCode::Char('q'), none, &groups), Some(Exit::Quit));
+        assert_eq!(dashboard.handle_key(KeyCode::Char('x'), none, &groups), Some(Exit::Detach));
+        assert_eq!(dashboard.handle_key(KeyCode::Char('d'), none, &groups), Some(Exit::Detach));
+        assert_eq!(dashboard.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL, &groups), Some(Exit::Quit));
+        dashboard.handle_key(KeyCode::Char('j'), none, &groups);
+        dashboard.handle_key(KeyCode::Char('k'), none, &groups);
+        dashboard.handle_key(KeyCode::Up, none, &groups);
+        assert_eq!(dashboard.table.selected(), Some(2));
+    }
+
+    #[test]
+    fn table_flags_notes_and_shows_a_countdown_bar() {
+        let groups = busy_groups();
+        let source = FakeSource { groups: groups.clone(), logs: vec![], problem: None };
+        let mut dashboard = Dashboard::new(Box::new(source));
+        let text = render(&mut dashboard, 100, 24, &groups).join("\n");
+        assert!(text.contains("█") && text.contains("1m 40s"), "{text}");
+        assert!(text.contains("held"));
+        let line = sleeps_in_cell(&groups[1], epoch_ms());
+        assert_eq!(line.spans[0].content, "held");
+        let mut zero = groups[0].clone();
+        zero.settings.idle_timeout = Duration::ZERO;
+        assert!(sleeps_in_cell(&zero, epoch_ms()).spans[0].content.is_empty());
+    }
+
+    #[test]
+    fn event_lines_keep_the_log_format() {
+        let ev = SdsEvent {
+            ts_ms: 1_767_225_600_000,
+            group: "shop".into(),
+            kind: EventKind::StartFailed,
+            message: "boom".into(),
+        };
+        assert_eq!(format_event(&ev), "2026-01-01T00:00:00Z WARN shop [startfailed] boom");
     }
 }

@@ -35,6 +35,10 @@ pub struct WakeArgs {
 pub struct TopArgs {
     #[command(flatten)]
     pub client: ClientArgs,
+    /// Play simulated groups instead of attaching to a daemon (no Docker, no network; --url,
+    /// --token and the config are ignored); for trying the dashboard out and for recordings
+    #[arg(long)]
+    pub demo: bool,
 }
 
 #[derive(Debug, Args)]
@@ -207,10 +211,14 @@ pub async fn top(cfg: Option<&Path>, args: TopArgs) -> Result<()> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         bail!("`sds top` needs a terminal; use `sds status` for scripts");
     }
-    let client = ApiClient::from_args(cfg, &args.client)?;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let source = crate::tui::RemoteSource::connect(client, cancel.clone()).await?;
-    let ui = crate::tui::Dashboard::new(Box::new(source));
+    let source: Box<dyn crate::tui::Source> = if args.demo {
+        Box::new(crate::tui::DemoSource::new())
+    } else {
+        let client = ApiClient::from_args(cfg, &args.client)?;
+        Box::new(crate::tui::RemoteSource::connect(client, cancel.clone()).await?)
+    };
+    let ui = crate::tui::Dashboard::new(source);
     let cancel_ui = cancel.clone();
     let outcome = tokio::task::spawn_blocking(move || ui.run(cancel_ui)).await;
     cancel.cancel();
