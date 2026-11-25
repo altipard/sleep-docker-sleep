@@ -72,8 +72,21 @@ browser ──▶ reverse proxy ──(forward-auth: /_sds/check/shop)──▶ 
 `sds` needs Docker Engine 20.10 or newer and access to the Docker socket. It runs on
 Linux (systemd) and macOS (launchd).
 
-**Release binary** (Linux x86_64/aarch64, macOS Apple Silicon/Intel), including an
-Ed25519 signature and the release public key:
+**Installer** (Linux x86_64/aarch64, macOS Apple Silicon/Intel). Downloads the latest
+release, verifies its Ed25519 signature against the pinned release key and installs it to
+`/usr/local/bin` (or `~/.local/bin` if that is not writable):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/altipard/sleep-docker-sleep/main/install.sh | sh
+```
+
+`SDS_INSTALL_DIR` sets the target directory, `SDS_VERSION` a release to install instead of the
+latest (0.4.1 and later). The signature check needs OpenSSL 3. Without it (stock macOS ships
+LibreSSL), the installer checks the release's `SHA256SUMS` instead and says so; 0.4.1 has no
+`SHA256SUMS` and needs OpenSSL 3 (`brew install openssl`).
+
+**Release binary by hand** (same files), including an Ed25519 signature and the release
+public key (needs OpenSSL 3 as well):
 
 ```bash
 base=https://github.com/altipard/sleep-docker-sleep/releases/latest/download

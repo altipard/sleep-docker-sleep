@@ -143,6 +143,11 @@ jobs:
             openssl pkeyutl -sign -rawin -inkey "$key" -in "$file" -out "$file.sig"
           done
           openssl pkey -in "$key" -pubout -out dist/sds-release-public-key.pem
+      # For installers without an OpenSSL that can verify Ed25519 (stock macOS).
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum sds-linux-x86_64 sds-linux-aarch64 sds-macos-x86_64 sds-macos-aarch64 > SHA256SUMS
       - name: tag and release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
