@@ -6,7 +6,7 @@
 |---|---|
 | `sds run [--headless] [--bind ADDR] [--insecure]` | Start the daemon. With a dashboard in a terminal; without a TTY or with `--headless` logs only. Non-loopback binds require a token or explicit `--insecure`. |
 | `sds status [--json] [--events]` | All groups with state, containers, last request, time left until sleep. |
-| `sds top` (alias `attach`) | Attach the terminal dashboard to the running daemon; `q` detaches, the daemon keeps running. |
+| `sds top` (alias `attach`) | Attach the terminal dashboard to the running daemon; `q` detaches, the daemon keeps running. `--demo` plays simulated groups instead (no daemon, no Docker). |
 | `sds wake <group> [--wait]` | Start a group; with `--wait` the command blocks until ready (non-zero exit code on failure). |
 | `sds sleep <group>` | Stop a group immediately. The next request wakes it again. |
 | `sds hold <group>` | Stop a group and keep it stopped: neither requests nor `sds wake` start it. |
@@ -24,8 +24,13 @@ variables `SDS_URL` / `SDS_TOKEN`.
 
 ## Terminal dashboard
 
-`sds run` in an interactive session shows groups, state, containers, requests and a log
-pane. Keys: `↑`/`↓` select, `w` wake, `s` sleep, `h` hold/release, `x` detach, `q` stop the daemon (asks
+`sds run` in an interactive session shows a table of the groups (state, containers up, last
+request, a countdown bar until the group sleeps) and, for the selected group, a panel with
+its containers, warnings, last error, recent events and a per-second request sparkline. The
+panel sits next to the table in terminals 110 columns wide or more and below it otherwise;
+the log pane of all groups is shown from 30 rows up. The sparkline is computed by the
+dashboard from the request counter, so it starts empty when the dashboard opens and shows
+about the last minute. Keys: `↑`/`↓` select, `w` wake, `s` sleep, `h` hold/release, `x` detach, `q` stop the daemon (asks
 for a second `q`, because sleeping groups cannot wake without the daemon). Containers are
 never touched by quitting.
 
@@ -37,6 +42,11 @@ the same dashboard against the running daemon through the admin API, from any sh
 the host (or remotely with `--url` and `--token`). The log pane then shows the daemon's
 event history; `q` only detaches. One daemon per host serves every Compose project on it;
 there is no need to run `sds run` per project.
+
+`sds top --demo` runs the same dashboard against simulated groups (a blog, a shop, a failing
+legacy app, ...) with compressed timeouts, without a daemon, Docker or network. The header
+shows a `DEMO` badge and `w`, `s` and `h` act on the simulation only. The simulation is
+deterministic, which makes it suitable for screenshots and terminal recordings.
 
 ## Web overview
 
