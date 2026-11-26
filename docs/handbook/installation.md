@@ -12,7 +12,9 @@
 
 Every [GitHub release](https://github.com/altipard/sleep-docker-sleep/releases) ships
 binaries for Linux (x86_64, aarch64) and macOS (Apple Silicon, Intel), plus an Ed25519
-signature and the release public key. The installer picks the right binary, verifies the
+signature and the release public key. The Linux binaries are statically linked and run on
+any distribution, Alpine included (releases up to 0.5.0 were linked against glibc 2.38/2.39
+and do not run on Debian 12 or Ubuntu 22.04). The installer picks the right binary, verifies the
 signature against the pinned release key and installs it to `/usr/local/bin` (or
 `~/.local/bin` if that is not writable):
 
