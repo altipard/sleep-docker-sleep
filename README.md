@@ -5,7 +5,7 @@
 <h1 align="center">sleep-docker-sleep</h1>
 
 <p align="center">
-  Scale idle Docker containers to zero and wake them on the first request.<br>
+  <b>Stops Docker containers nobody is using and wakes them on the first request.</b><br>
   One Rust binary, no changes to your applications, works with the reverse proxy you already run.
 </p>
 
@@ -17,71 +17,29 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/altipard/sleep-docker-sleep" alt="MIT license"></a>
 </p>
 
----
-
-`sds` watches the containers on a host. When a group of containers (a Compose project by
-default) has not seen a request for a while, `sds` stops it. The next request starts it
-again; the caller either waits a moment or sees a small "waking up" page. Made for hosts
-that run many rarely used stacks: staging environments, customer demos, internal tools,
-side projects.
-
-```text
-browser ──▶ reverse proxy ──(forward-auth: /_sds/check/shop)──▶ sds ──▶ docker start / stop
-                 │                                                            │
-                 └──────────────── request ────────────────▶ container group "shop" ◀┘
-```
-
 <p align="center">
-  <img src="assets/screenshots/overview.png" alt="The sds web overview: groups with their state, request counters and the time until they fall asleep" width="900">
+  <img src="assets/demo/top.gif" alt="sds top in demo mode: the group blog falls asleep after 30 idle seconds, ml-lab is woken by hand, then a request wakes blog again" width="900">
 </p>
 
-**Key features**
+## Install
 
-- **Control plane only.** nginx, Caddy or Traefik ask `sds` before each request via their
-  built-in forward-auth. `sds` never carries application traffic, so it cannot become a
-  bottleneck, and with nginx a crash of `sds` fails open.
-- **Label driven.** Containers opt in with `sds.enable=true`; a Compose project forms a
-  group automatically. No central inventory to maintain, one daemon per host.
-- **Graceful wake-up.** Requests are held until the group is healthy (Docker HEALTHCHECK,
-  HTTP or TCP probe), or a self-refreshing waiting page is served. Bounded waiters, one
-  start per group, no thundering herd.
-- **Native proxy as a fallback.** For stacks without a reverse proxy and for TCP services
-  such as databases, `sds` can own the public port itself (streaming, WebSocket aware).
-- **Operator tooling included.** CLI, live terminal dashboard (`sds top` attaches to the
-  running service), web overview with event log, JSON API with OpenAPI spec and Swagger
-  UI, SSE stream, hold/release for maintenance, generated proxy snippets, systemd/launchd
-  units.
-
-## Contents
-
-- [Installation](#installation)
-- [Quick start](#quick-start)
-- [Try it with the demo stack](#try-it-with-the-demo-stack)
-- [Labels](#labels)
-- [Usage with reverse proxies](#usage-with-reverse-proxies)
-- [Operating it](#operating-it)
-- [Documentation](#documentation)
-- [How it compares](#how-it-compares)
-- [Status](#status)
-- [Development](#development)
-- [Acknowledgements](#acknowledgements)
-- [License](#license)
-
-## Installation
-
-`sds` needs Docker Engine 20.10 or newer and access to the Docker socket. It runs on
-Linux (systemd) and macOS (launchd).
-
-**Installer** (Linux x86_64/aarch64, macOS Apple Silicon/Intel). Downloads the latest
-release, verifies its Ed25519 signature against the pinned release key and installs it to
-`/usr/local/bin` (or `~/.local/bin` if that is not writable):
+Linux (any distribution, the binaries are static) and macOS, x86_64 and aarch64. Needs Docker
+Engine 20.10 or newer and access to the Docker socket.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/altipard/sleep-docker-sleep/main/install.sh | sh
 ```
 
-`SDS_INSTALL_DIR` sets the target directory, `SDS_VERSION` a release to install instead of the
-latest (0.4.1 and later). The signature check needs OpenSSL 3. Without it (stock macOS ships
+The installer verifies the release and installs to `/usr/local/bin`, or to `~/.local/bin` if
+that is not writable. Look around first, without Docker or a daemon: `sds top --demo`.
+
+<details>
+<summary>specific version, verification, by hand, cargo or container</summary>
+
+<br>
+
+**Installer options.** `SDS_INSTALL_DIR` sets the target directory, `SDS_VERSION` a release to
+install instead of the latest (0.4.1 and later). The signature check needs OpenSSL 3. Without it (stock macOS ships
 LibreSSL), the installer checks the release's `SHA256SUMS` instead and says so; 0.4.1 has no
 `SHA256SUMS` and needs OpenSSL 3 (`brew install openssl`).
 
@@ -117,9 +75,34 @@ docker run -d --name sds \
   ghcr.io/altipard/sleep-docker-sleep:latest
 ```
 
+</details>
+
 > [!TIP]
 > `sds check` verifies Docker access and lists the groups it would manage, without
 > starting the daemon. Run it first.
+
+## Contents
+
+- [Why I built this](#why-i-built-this)
+- [Quick start](#quick-start)
+- [What you get](#what-you-get)
+- [How it works](#how-it-works)
+- [Try it with the demo stack](#try-it-with-the-demo-stack)
+- [How it compares](#how-it-compares)
+- [Documentation](#documentation)
+- [Status](#status)
+- [Development](#development)
+- [Acknowledgements](#acknowledgements)
+- [License](#license)
+
+## Why I built this
+
+As a developer you tend to have more Docker containers running than you actually need. `sds`
+brings some order to that: what nobody uses goes to sleep, what somebody needs is back on the
+first request. The same holds for hosts with many rarely used stacks: staging environments,
+customer demos, internal tools, side projects.
+
+The idea came from pandiloko, see [Acknowledgements](#acknowledgements).
 
 ## Quick start
 
@@ -152,6 +135,108 @@ docker run -d --name sds \
 > One `sds` per host manages every labelled container on it. Two daemons on the same
 > Docker socket would fight over the same groups.
 
+## What you get
+
+### See why a group is awake and when it will sleep
+
+`sds top` attaches to the running daemon: state, containers, last request and a countdown per
+group, plus health, recent events and a request sparkline for the selected one. `w` wakes,
+`s` sleeps, `h` holds a group down for maintenance.
+
+<p align="center">
+  <img src="assets/demo/top.png" alt="The terminal dashboard with the detail panel of one group: countdown, request sparkline, container health and recent events" width="900">
+</p>
+
+### The same in the browser
+
+The web overview at `http://127.0.0.1:9900/` shows groups, counters and the event log live,
+with buttons for wake, sleep, hold and release.
+
+<p align="center">
+  <img src="assets/screenshots/overview.png" alt="The sds web overview: groups with their state, request counters and the time until they fall asleep" width="900">
+</p>
+
+### Containers opt in with a label
+
+`sds.enable=true` is enough; a Compose project forms a group automatically. There is no
+central inventory to maintain, and Compose is not required
+([`docker run` example](docs/handbook/labels.md#example-plain-docker-run-without-compose)).
+
+<details>
+<summary>the most important labels</summary>
+
+<br>
+
+| Label | Default | Meaning |
+|---|---|---|
+| `sds.enable` | | `true` puts the container under management. |
+| `sds.group` | Compose project | Containers with the same group start and stop together. |
+| `sds.idle_timeout` | `15m` | Stop the group after this long without a request. |
+| `sds.health` | `docker` | Readiness after a start: `docker` (HEALTHCHECK), `http://…`, `tcp://host:port`, `grace`. |
+| `sds.wake` | `hold` | `hold` the first request until ready, or serve a waiting `page`. |
+| `sds.keep_awake` | `false` | Never stop this group (databases shared by several stacks). |
+| `sds.proxy.listen` | | Let `sds` own a public port itself, see [native proxy](docs/handbook/native-proxy.md). |
+
+Defaults live in `sds.toml`; labels override them per group. The full list is in the
+[labels chapter](docs/handbook/labels.md).
+
+</details>
+
+### Your reverse proxy stays in charge
+
+nginx, Caddy or Traefik ask `sds` before each request via their built-in forward-auth. `sds`
+never carries application traffic, so it cannot become a bottleneck. `sds integrate` prints
+the ready-to-use snippet:
+
+```bash
+sds integrate nginx shop --host shop.example.com --upstream http://127.0.0.1:18080
+sds integrate caddy shop --host shop.example.com --upstream http://127.0.0.1:18080
+sds integrate traefik shop --upstream http://shop:8080 --sds-url http://sds:9900
+```
+
+With nginx a crash of `sds` fails open: the site stays up, only sleeping stops. Caddy and
+Traefik have no fail-open for forward-auth; run `sds` as a supervised service with automatic
+restart. Details are in the [reverse proxy chapter](docs/handbook/reverse-proxy.md), complete
+setups under [`examples/`](examples/README.md).
+
+### Wake-ups that wait for healthy
+
+Requests are held until the group is healthy (Docker HEALTHCHECK, HTTP or TCP probe), or a
+self-refreshing waiting page is served. Waiters are bounded and a group starts only once, no
+matter how many requests arrive.
+
+### And more
+
+- **[Native proxy](docs/handbook/native-proxy.md):** for stacks without a reverse proxy and
+  for TCP services such as databases, `sds` can own the public port itself (streaming,
+  WebSocket aware).
+- **Scripting:** `sds status --json`, `sds wake --wait`, `sds sleep`, `sds hold`,
+  `sds release`.
+- **[HTTP API](docs/handbook/api.md):** JSON, server-sent events, OpenAPI spec and Swagger UI
+  at `/docs`.
+- **Service units:** `sds service install` writes the systemd unit or launchd plist.
+- **Signed updates:** `sds update` verifies and installs the latest release in place and keeps
+  the previous binary for rollback.
+
+All commands are in the [operations chapter](docs/handbook/operations.md).
+
+## How it works
+
+```text
+browser ──▶ reverse proxy ──(forward-auth: /_sds/check/shop)──▶ sds ──▶ docker start / stop
+                 │                                                            │
+                 └──────────────── request ────────────────▶ container group "shop" ◀┘
+```
+
+1. Before each request the proxy asks `GET /_sds/check/<group>`.
+2. If the group is running, `sds` answers `200` and records the activity.
+3. If it is asleep, `sds` starts the containers and holds the request, or answers with the
+   waiting page.
+4. Without a request for `sds.idle_timeout`, `sds` stops the group.
+
+Only requests that pass through your reverse proxy or the native proxy count as activity. What `sds` does not do is listed
+in [Limitations](docs/handbook/limitations.md).
+
 ## Try it with the demo stack
 
 [`examples/demo`](examples/demo/README.md) starts ten tiny web servers with idle timeouts
@@ -164,79 +249,6 @@ docker compose up -d
 sds run          # second terminal
 ./traffic.sh     # third terminal
 ```
-
-## Labels
-
-| Label | Default | Meaning |
-|---|---|---|
-| `sds.enable` | | `true` puts the container under management. |
-| `sds.group` | Compose project | Containers with the same group start and stop together. |
-| `sds.idle_timeout` | `15m` | Stop the group after this long without a request. |
-| `sds.health` | `docker` | Readiness after a start: `docker` (HEALTHCHECK), `http://…`, `tcp://host:port`, `grace`. |
-| `sds.wake` | `hold` | `hold` the first request until ready, or serve a waiting `page`. |
-| `sds.keep_awake` | `false` | Never stop this group (databases shared by several stacks). |
-| `sds.proxy.listen` | | Let `sds` own a public port itself, see [native proxy](docs/handbook/native-proxy.md). |
-
-Compose is not required: with plain `docker run --label sds.enable=true --label
-sds.group=shop …` the containers form the same group, see the
-[`docker run` example](docs/handbook/labels.md#example-plain-docker-run-without-compose).
-
-Defaults live in `sds.toml`; labels override them per group. The full list is in the
-[labels chapter](docs/handbook/labels.md).
-
-## Usage with reverse proxies
-
-The proxy asks `GET /_sds/check/<group>` before each request. `200` means go ahead; while
-a group wakes up `sds` either holds the request or answers with the waiting page.
-
-**nginx** on the host ([example](examples/nginx-host/))
-
-```bash
-sds integrate nginx shop --host shop.example.com --upstream http://127.0.0.1:18080
-```
-
-Uses `auth_request`. If `sds` is down, the `error_page 500 502` fallback bypasses it: the
-site stays up, only sleeping stops.
-
-**Caddy** on the host or in the project ([examples](examples/caddy-host/))
-
-```bash
-sds integrate caddy shop --host shop.example.com --upstream http://127.0.0.1:18080
-```
-
-Uses `forward_auth`. Caddy has no fail-open for forward-auth; run `sds` as a supervised
-service with automatic restart.
-
-**Traefik** per project or central ([examples](examples/traefik-central/))
-
-```bash
-sds integrate traefik shop --upstream http://shop:8080 --sds-url http://sds:9900
-```
-
-Prints the `forwardAuth` middleware as labels. Same fail-open caveat as Caddy.
-
-Details and the exact snippets are in the [reverse proxy chapter](docs/handbook/reverse-proxy.md).
-
-## Operating it
-
-| Tool | What it gives you |
-|---|---|
-| `sds run` | The daemon with a live terminal dashboard; `x` detaches, the daemon keeps running. |
-| `sds top` | Attach the dashboard to a running daemon, wake or sleep groups with `w` and `s`, hold/release with `h`. |
-| `http://127.0.0.1:9900/` | Web overview with group states, counters and the event log. |
-| `sds status`, `sds wake`, `sds sleep` | Scripting and quick checks; `--json` for machines. |
-| `sds hold`, `sds release` | Keep a group stopped for maintenance; requests do not wake it until released. |
-| `/api/v1/…`, `/api/v1/events` | JSON API and server-sent events for your own tooling. |
-| `http://127.0.0.1:9900/docs` | Swagger UI for the API; the spec is at `/openapi.json`. |
-| `sds service install` | Writes the systemd unit or launchd plist. |
-| `sds update` | Verifies and installs the latest signed release in place; keeps the previous binary for rollback. |
-
-## Documentation
-
-The [handbook](https://altipard.github.io/sleep-docker-sleep/) covers installation,
-the configuration reference, labels and groups, per-proxy integration, the native proxy,
-operations, troubleshooting, the HTTP API, limitations and the architecture. The source is
-in [`docs/handbook`](docs/handbook/README.md).
 
 ## How it compares
 
@@ -252,6 +264,13 @@ in [`docs/handbook`](docs/handbook/README.md).
 The design goal was production stability on hosts with a mix of host-level and
 per-project proxies, which is why `sds` stays out of the data path by default. See
 [Limitations](docs/handbook/limitations.md) for the honest list of what it does not do.
+
+## Documentation
+
+The [handbook](https://altipard.github.io/sleep-docker-sleep/) covers installation,
+the configuration reference, labels and groups, per-proxy integration, the native proxy,
+operations, troubleshooting, the HTTP API, limitations and the architecture. The source is
+in [`docs/handbook`](docs/handbook/README.md).
 
 ## Status
 

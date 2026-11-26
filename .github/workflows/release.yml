@@ -67,8 +67,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu, name: sds-linux-x86_64 }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, name: sds-linux-aarch64 }
+          # Linux binaries link musl statically: a glibc build only runs on distributions at
+          # least as new as the runner (0.5.0 needed glibc 2.38/2.39, not Debian 12 or Ubuntu 22.04).
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-musl,  name: sds-linux-x86_64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, name: sds-linux-aarch64 }
           - { os: macos-latest,     target: aarch64-apple-darwin,      name: sds-macos-aarch64 }
           - { os: macos-latest,     target: x86_64-apple-darwin,       name: sds-macos-x86_64 }
     runs-on: ${{ matrix.os }}
@@ -79,10 +81,16 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+      - name: musl toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
       - run: cargo build --locked --release --target ${{ matrix.target }}
         env:
           SDS_VERSION: ${{ needs.version.outputs.version }}
       - run: cp target/${{ matrix.target }}/release/sds ${{ matrix.name }}
+      - name: refuse a dynamically linked Linux binary
+        if: runner.os == 'Linux'
+        run: file ${{ matrix.name }} | tee /dev/stderr | grep -Eq 'static(ally|-pie) linked'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.name }}
