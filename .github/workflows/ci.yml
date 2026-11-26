@@ -93,6 +93,31 @@ jobs:
       - name: authenticated Traefik sleep/wake contract
         run: bash examples/traefik-central/smoke.sh
 
+  # Same build as the release: the static binary must run on old and non-glibc distributions.
+  static-linux:
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: runs on Ubuntu 20.04, Debian 12 and Alpine
+        run: |
+          bin=target/${{ matrix.target }}/release/sds
+          file "$bin" | grep -Eq 'static(ally|-pie) linked'
+          for image in ubuntu:20.04 debian:bookworm-slim alpine:3.20; do
+            docker run --rm -v "$PWD/$bin:/sds:ro" "$image" /sds --version
+          done
+
   shellcheck:
     runs-on: ubuntu-latest
     steps:

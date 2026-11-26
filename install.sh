@@ -342,7 +342,7 @@ install_binary() { # downloaded-file
     chmod 755 "$stage"
     # Same check as `sds update`: the new binary must run and report the expected version.
     reported=$("$stage" --version 2>&1) ||
-        fail "the downloaded binary does not run on this system (Linux releases need glibc); nothing was installed"
+        fail "the downloaded binary does not run on this system (Linux releases up to 0.5.0 need glibc 2.38 or newer); nothing was installed"
     [ "$reported" = "sds $VERSION" ] ||
         fail "the downloaded binary reports '$reported', expected 'sds $VERSION'; nothing was installed"
     KEPT=0
