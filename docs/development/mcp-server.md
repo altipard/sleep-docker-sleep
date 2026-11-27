@@ -545,15 +545,24 @@ https://altipard.github.io/sleep-docker-sleep/
 5. **The proxy snippet contains the admin token.** With `admin.token` set,
    `sds integrate` writes it in clear text into the snippet. Never print, `cat` or quote
    the snippet or the file it went into.
-   - To show the change (rule 4), mask the token:
-     `sds integrate nginx shop | sed -E 's/(X-SDS-Token:? )"[^"]+"/\1"<redacted>"/'`.
-   - Write the file without group or world read: `(umask 077; sds integrate nginx shop >
-     ./sds-shop.conf)`. A plain `>` uses the umask, often 0644, so every local user can
-     read the token. With sudo the redirect must run inside the root shell:
-     `sudo sh -c 'umask 077; sds integrate nginx shop > /etc/nginx/snippets/sds-shop.conf'`.
+   - To show the change (rule 4), mask every line that mentions the header, in any case
+     and quoting:
+     `sds integrate nginx shop | sed -E 's/([Xx]-[Ss][Dd][Ss]-[Tt][Oo][Kk][Ee][Nn]).*/\1 <redacted>/'`
+     (bracket classes because BSD sed has no case-insensitive flag).
+   - Write the file without group or world read. A plain `>` creates it with the umask,
+     often 0644, so every local user can read the token. `umask 077` applies only when the
+     file is created: overwriting an existing 0644 file keeps 0644. So remove it first:
+     `(umask 077; rm -f ./sds-shop.conf; sds integrate nginx shop > ./sds-shop.conf)`.
+   - Root-owned target (proxy config under `/etc`): run `sds integrate` as the user, not
+     under `sudo sh -c`. sudo drops `SDS_CONFIG`, `~` becomes root's home and `sds` may not
+     be on `secure_path`, so the snippet could lack the token or use the wrong
+     `admin.bind`. Write to a user-owned temp file and install it with an explicit mode:
+     `tmp=$(mktemp) && sds integrate nginx shop > "$tmp" && sudo install -m 600 "$tmp"
+     /etc/nginx/snippets/sds-shop.conf; rm -f "$tmp"` (`mktemp` creates the file 0600;
+     `install -m` sets the mode on the target, whether it existed or not).
    - If the proxy reads its config as a non-root user (Caddy usually runs as `caddy`),
-     give that group read access only: `chgrp <proxy group> FILE; chmod 640 FILE`. nginx
-     reads config as root, so 0600 is enough.
+     install with group read only: `sudo install -m 640 -g <proxy group> "$tmp" FILE`.
+     nginx reads config as root, so 0600 is enough.
    - Traefik: use the file-provider part of the snippet (dynamic configuration), not the
      container-label variant. The labels put the token into the compose file, which is
      usually in git, and into `docker inspect` output. If labels are required, put them into
@@ -580,7 +589,8 @@ Decision path, details in [references/setup.md](references/setup.md):
    Containers that cannot get labels: `[groups.<name>]` in `sds.toml`.
 2. Wake path: a reverse proxy calls sds via forward-auth; write its snippet with
    `sds integrate <nginx|caddy|traefik> <group>` into the proxy config with mode 0600 or
-   0640 (rule 5); for Traefik the file-provider part. Without a reverse proxy, or for plain TCP: the native proxy (`sds.proxy.*` labels).
+   0640, following the recipes in rule 5; for Traefik the file-provider part. Without a
+   reverse proxy, or for plain TCP: the native proxy (`sds.proxy.*` labels).
 3. Verify: `sds check`, then `sds status`.
 
 ## Operating
@@ -766,8 +776,11 @@ container that stage 2 extends.
    text into the snippet (`src/integrate/mod.rs:61,136,173`, Traefik labels `:185-190`,
    `cli/integrate.rs:44`); an agent that shows it puts the token into the transcript and
    the provider's logs, and a plain `>` leaves it readable for every local user. Skill
-   rule 5: show only masked, write with `umask 077` (0640 with the proxy group where
-   needed), Traefik via the file provider, never commit. A real fix is a
+   rule 5: show only masked (every line naming the header, any case), write with
+   `umask 077` after removing an existing file (umask does not tighten an overwrite),
+   install root-owned targets from a user-owned temp file with `sudo install -m 600`
+   (640 with the proxy group where needed) instead of running `sds integrate` under sudo,
+   Traefik via the file provider, never commit. A real fix is a
    `--token-file`/placeholder option in `sds integrate` (not planned yet).
 9. **Stage-1 rules are advice only.** The agent has the user's shell and Docker access;
    read-only, exact-name writes and hold limits are not enforced until stage 2.
@@ -821,9 +834,9 @@ a starting point. Question 15 stays open.
 16. Commit type of PR 1? **Decided: `feat(plugin)`, releases a minor version.** Plugin and
     installer step are user-facing behaviour (reasons under the table above).
 17. Token handling in the skill? **Decided: strict.** Rule 5: the snippet is shown only
-    with the token masked, the file is written with `umask 077` (0640 with the proxy group
-    where the proxy needs it), Traefik via the file provider instead of labels, never
-    committed.
+    with the token masked, the file is written with `umask 077` after `rm -f` or installed
+    with `sudo install -m 600` (640 with the proxy group where the proxy needs it),
+    Traefik via the file provider instead of labels, never committed.
 
 ## Sources
 
