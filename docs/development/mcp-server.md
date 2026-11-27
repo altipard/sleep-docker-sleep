@@ -2,7 +2,9 @@
 
 Status: proposal, nothing implemented. Verified against `develop` at `8841c7e`
 (file:line references are to that commit; first written against `d8e932e`).
-Statements marked **assumption** or **unverified** were not checked.
+Statements marked **assumption** or **unverified** were not checked. Stage 1 (skill) is
+decided; stage 2 (this MCP server) is optional, pending open question 11 (decisions of
+2026-11-27 in section 8).
 
 ## Goal
 
@@ -10,20 +12,20 @@ Help from a coding agent for building and operating an `sds` setup: label a stac
 reverse proxy, wake the stack before tests, see what is running that nobody uses, find out
 why a group did not start, and see which containers `sds` does not manage (in stage 1 only
 by comparing `docker ps` with `sds status` and suggesting labels; the list with reasons
-needs stage 2, gap B). `sds` already
-knows which groups are idle and can stop and start them; the agent needs to know how to use
-that.
+needs stage 2, gap B). `sds` already knows which groups are idle and can stop and start
+them; the agent needs to know how to use that.
 
 Two stages (details in section 7):
 
-1. **Skill first.** A Claude Code plugin in the sds repo ships a skill `sds` and nothing
-   else. The agent works through its shell with the existing `sds` CLI and the handbook. No
-   daemon change, no new binary code.
-2. **MCP server (`sds mcp`, sections 1 to 6) second**, for agents without a shell (Claude
-   Desktop) and for limits that are enforced instead of advised: read-only mode, hold with
-   TTL, the unmanaged-container list. The plugin then gains an `mcpServers` entry; the
-   install command stays the same. Whether stage 2 is needed at all is decided after real
-   use of the skill (open question 11).
+1. **Skill first, decided.** A Claude Code plugin in the sds repo ships a skill `sds` and
+   nothing else. The agent works through its shell with the existing `sds` CLI and the
+   handbook. No daemon change, no new binary code.
+2. **MCP server (`sds mcp`, sections 1 to 6), optional.** For agents without a shell
+   (Claude Desktop) and for limits that are enforced instead of advised: read-only mode,
+   hold with TTL, the unmanaged-container list. The plugin would then gain an `mcpServers`
+   entry; the install command stays the same. Not committed: whether stage 2 is built is
+   decided after real use of the skill (open question 11). Sections 1 to 6 are the design
+   for that case, not a plan of record.
 
 Non-goals: a general Docker tool, log access, running commands in containers, replacing
 `sds top` or the web overview.
@@ -343,7 +345,7 @@ Same bar as `docs/development/production-hardening.tdd.md` (RED then GREEN per b
 
 ### Docs
 
-Stage 2 extends the handbook chapter `docs/handbook/agents.md` that PR 1 creates (section 7)
+If built, stage 2 extends the handbook chapter `docs/handbook/agents.md` that PR 1 creates (section 7)
 with the MCP server, modes and client config; updates to `api.md` and
 `src/admin/assets/openapi.json` for each new route, `operations.md` (leases),
 `roadmap.md` (remove "hold survives restart" only when done; add the read-only token),
@@ -381,7 +383,7 @@ different modes.
 Modelled on `github.com/altipard/sevdesk-mcp` (`.claude-plugin/marketplace.json`,
 `plugins/sevdesk/.claude-plugin/plugin.json`, `plugins/sevdesk/skills/sevdesk/SKILL.md`,
 `docs/install.md`, `install.sh`, `src/setup/`). There the plugin starts the server with
-`npx` and brings a skill; here stage 1 is the skill alone and stage 2 adds the server.
+`npx` and brings a skill; here stage 1 is the skill alone and an optional stage 2 adds the server.
 
 ### Plugin and marketplace in the sds repo
 
@@ -429,7 +431,7 @@ plugins/sds/skills/sds/references/commands.md
 }
 ```
 
-Stage 2 delta, same shape as sevdesk-mcp's `userConfig` and `mcpServers` (PR 2 adds it with
+Stage 2 delta, only if stage 2 is built; same shape as sevdesk-mcp's `userConfig` and `mcpServers` (PR 2 adds it with
 the `read` option only, PR 3 adds `operate`):
 
 ```json
@@ -535,15 +537,28 @@ https://altipard.github.io/sleep-docker-sleep/
    start may take up to `start_timeout` (default 90 s). Check `sds status` until the group
    is `running` or `failed`.
 4. **Configuration belongs to the user.** Change labels, compose files, `sds.toml` or
-   service units only when asked, and show the change first. Never recreate containers,
+   service units only when asked, and show the change first; a change that contains the
+   admin token is shown masked (rule 5). Never recreate containers,
    restart sds, run `sds update` or `sds service install` on your own. `sds.toml` changes
    need a restart of sds. Read the effective config with `sds config` (token redacted), not
    by printing `sds.toml`.
 5. **The proxy snippet contains the admin token.** With `admin.token` set,
-   `sds integrate` writes it in clear text into the snippet. Never print, echo or quote
-   the snippet; redirect the output straight into the proxy config file
-   (`sds integrate nginx shop > /etc/nginx/snippets/sds-shop.conf`), keep that file out of
-   git, and tell the user where it is.
+   `sds integrate` writes it in clear text into the snippet. Never print, `cat` or quote
+   the snippet or the file it went into.
+   - To show the change (rule 4), mask the token:
+     `sds integrate nginx shop | sed -E 's/(X-SDS-Token:? )"[^"]+"/\1"<redacted>"/'`.
+   - Write the file without group or world read: `(umask 077; sds integrate nginx shop >
+     ./sds-shop.conf)`. A plain `>` uses the umask, often 0644, so every local user can
+     read the token. With sudo the redirect must run inside the root shell:
+     `sudo sh -c 'umask 077; sds integrate nginx shop > /etc/nginx/snippets/sds-shop.conf'`.
+   - If the proxy reads its config as a non-root user (Caddy usually runs as `caddy`),
+     give that group read access only: `chgrp <proxy group> FILE; chmod 640 FILE`. nginx
+     reads config as root, so 0600 is enough.
+   - Traefik: use the file-provider part of the snippet (dynamic configuration), not the
+     container-label variant. The labels put the token into the compose file, which is
+     usually in git, and into `docker inspect` output. If labels are required, put them into
+     a compose override file that is not committed.
+   - Keep the file out of git and tell the user where it is.
 6. **No hold without an end.** A hold has no expiry: the group stays down until
    `sds release` or a restart of sds. Hold only when the user asks, name the release
    command, and release when the task that needed it is done.
@@ -564,8 +579,8 @@ Decision path, details in [references/setup.md](references/setup.md):
    proxy inside the stack. Containers without compose: the same labels on `docker run`.
    Containers that cannot get labels: `[groups.<name>]` in `sds.toml`.
 2. Wake path: a reverse proxy calls sds via forward-auth; write its snippet with
-   `sds integrate <nginx|caddy|traefik> <group> > <proxy config file>` (rule 5). Without
-   a reverse proxy, or for plain TCP: the native proxy (`sds.proxy.*` labels).
+   `sds integrate <nginx|caddy|traefik> <group>` into the proxy config with mode 0600 or
+   0640 (rule 5); for Traefik the file-provider part. Without a reverse proxy, or for plain TCP: the native proxy (`sds.proxy.*` labels).
 3. Verify: `sds check`, then `sds status`.
 
 ## Operating
@@ -597,7 +612,7 @@ From the handbook chapter "Limitations and known behaviour":
 
 Rules derived from this proposal: 1 from section 4 (untrusted text), 2 from use case 2,
 3 from use case 1 and gap D, 5 from `src/integrate/mod.rs:61,136,173` (token in the
-snippet) and section 4 token handling, 6 from use case 3 and gap A, 8 is the stage-1 form
+snippet), `:185-190` (token in the Traefik label variant) and section 4 token handling, 6 from use case 3 and gap A, 8 is the stage-1 form
 of "the server tool list is authoritative". The rules are advice; nothing enforces them in stage 1.
 That gap is the main argument for stage 2.
 
@@ -606,7 +621,7 @@ links the site root and names chapters. The label sentence follows `limitations.
 the unknown-group sentence follows `reverse-proxy.md:28-30` and the default
 `unknown_group: Allow` (`config/file.rs:51`).
 
-Stage 2 adds a part to the skill that applies only when `sds_*` tools are present: the
+If stage 2 is built, it adds a part to the skill that applies only when `sds_*` tools are present: the
 server's tool list is authoritative over the skill text; `sds_wake` result `starting`
 means poll `sds_group`, not retry; never switch the plugin to `operate` on the agent's own
 initiative (rule 4); no hold tool exists before the hold-TTL PR, and `sds_hold` always
@@ -704,8 +719,9 @@ to it on a terminal. For sds:
 ## 8. Implementation plan
 
 Conventional Commits; `feat` releases a minor version, so PRs 1 to 7 are separate
-release-worthy steps; PR 8 (`docs`) does not release. PR 1 is stage 1; PRs 2 to 8 are
-stage 2 and start only if open question 11 says so.
+release-worthy steps; PR 8 (`docs`) does not release. PR 1 is stage 1 and decided. PRs 2
+to 8 are stage 2, optional: they start only if open question 11 says so after real use of
+the skill.
 
 | PR | Content | Effort |
 |---|---|---|
@@ -718,7 +734,7 @@ stage 2 and start only if open question 11 says so.
 | 7 `feat(admin): keep-awake lease` | gap C, `sds_keep_awake`, restart-persistence follow-up stays on the roadmap | 1.5 d |
 | 8 `docs(mcp): handbook, resources, prompts` | extend `docs/handbook/agents.md` with the MCP server and client configs, optional resources and prompts | 1 d |
 
-About 13 working days: 1.5 for stage 1, 11.5 for stage 2. PR 1 needs no daemon or binary
+About 1.5 working days committed for stage 1; another 11.5 only if stage 2 is built. PR 1 needs no daemon or binary
 change and delivers value on its own; PR 2 is the first with code and carries no write
 risk.
 
@@ -747,9 +763,11 @@ container that stage 2 extends.
 7. Two instances on one daemon fight over groups (`limitations.md`); an agent waking
    groups is one more actor. Not new, but more visible.
 8. **Admin token in the model context.** `sds integrate` prints `admin.token` in clear
-   text into the snippet (`src/integrate/mod.rs:61,136,173`, `cli/integrate.rs:44`); an
-   agent that shows it puts the token into the transcript and the provider's logs. Skill
-   rule 5 (redirect to the file, never print, never commit). A real fix is a
+   text into the snippet (`src/integrate/mod.rs:61,136,173`, Traefik labels `:185-190`,
+   `cli/integrate.rs:44`); an agent that shows it puts the token into the transcript and
+   the provider's logs, and a plain `>` leaves it readable for every local user. Skill
+   rule 5: show only masked, write with `umask 077` (0640 with the proxy group where
+   needed), Traefik via the file provider, never commit. A real fix is a
    `--token-file`/placeholder option in `sds integrate` (not planned yet).
 9. **Stage-1 rules are advice only.** The agent has the user's shell and Docker access;
    read-only, exact-name writes and hold limits are not enforced until stage 2.
@@ -761,11 +779,16 @@ container that stage 2 extends.
 12. **Unsigned plugin.** The binary is checked against the pinned Ed25519 key or
     SHA256SUMS; the plugin, instructions for an agent with a shell, comes from `main`
     through Claude Code without any check, so a compromised `main` reaches users without a
-    release. Mitigations: branch protection on `main`, the prompt states it, and pinning
+    release. Mitigations: branch protection on `main` (**unverified**: not visible from the
+    repo, only in the GitHub settings), the prompt states it, and pinning
     the marketplace or plugin to a release tag (**unverified** whether Claude Code
     supports a ref for GitHub marketplaces).
 
 ### Open questions (recommended answer first)
+
+Decided by the user on 2026-11-27: 11, 12, 14, 16 and 17. Questions 1 to 10 and 13 concern
+stage 2 only and are deferred to the decision in question 11; the recommendations stay as
+a starting point. Question 15 stays open.
 
 1. Read-only by default, writes via `--mode operate`? **Yes.**
 2. No hold tool until daemon-side TTL exists? **Yes**, hold/release come with PR 4 and 5.
@@ -782,20 +805,25 @@ container that stage 2 extends.
    shared team daemon exists.
 10. Is it acceptable that `sds_unmanaged` sends names of all host containers to the model?
     **Only on explicit use; consider an opt-in flag for it.**
-11. Is stage 2 needed at all once the guidance exists? **Decide after real use of the
-    skill**: needed if agents without a shell matter, or if advised limits (rules 4 to 7)
-    turn out to be ignored.
-12. Plugin in the sds repo or a separate repo? **sds repo**: guidance, CLI and later the
-    tool list change in one commit; one install command names the repo users already know.
-    A separate repo only if plugin releases must be decoupled from `main`.
+11. Is stage 2 needed at all once the guidance exists? **Decided: decide after real use of
+    the skill.** Build it if agents without a shell matter, or if advised limits (rules 4
+    to 7) turn out to be ignored. Until then questions 1 to 10 and 13 are deferred.
+12. Plugin in the sds repo or a separate repo? **Decided: sds repo.** Guidance, CLI and
+    later the tool list change in one commit; one install command names the repo users
+    already know.
 13. Mode names `read` and `operate`? **Yes**, same as `--mode operate`; `write`/`full` as in
-    sevdesk-mcp do not fit (there is no irreversible action).
-14. Does `install.sh` ask by default (with terminal, `claude` on `PATH`, not root, no
-    `CI`)? **Yes, default answer no**; `SDS_NO_CLAUDE=1` skips the question.
+    sevdesk-mcp do not fit (there is no irreversible action). Deferred to question 11.
+14. Does `install.sh` ask? **Decided: only with a terminal and `claude` on `PATH`, default
+    answer no, never in CI or non-interactive runs; `SDS_NO_CLAUDE=1` skips it.** The
+    root case prints the command instead (section 7, installer step).
 15. Ship guidance copies for other agents through a Rust `sds mcp setup`? **Not now**;
     handbook snippets first, setup only on demand (section 7).
-16. Commit type of PR 1: `feat(plugin)` (releases) or `docs`/`chore` (no release)?
-    **`feat(plugin)`**, reasons under the table above.
+16. Commit type of PR 1? **Decided: `feat(plugin)`, releases a minor version.** Plugin and
+    installer step are user-facing behaviour (reasons under the table above).
+17. Token handling in the skill? **Decided: strict.** Rule 5: the snippet is shown only
+    with the token masked, the file is written with `umask 077` (0640 with the proxy group
+    where the proxy needs it), Traefik via the file provider instead of labels, never
+    committed.
 
 ## Sources
 
