@@ -380,7 +380,7 @@ offer_claude_plugin() {
         say "Claude Code plugin for sds: run as your own user, not root: $PLUGIN_CMD"
         return 0
     fi
-    if [ -n "${CI:-}" ] || [ -n "${SDS_NO_CLAUDE:-}" ] || ! [ -t 1 ] || ! has_tty; then
+    if [ -n "${CI:-}" ] || [ "${SDS_NO_CLAUDE:-}" = 1 ] || ! [ -t 1 ] || ! has_tty; then
         say "Claude Code plugin for sds: $PLUGIN_CMD"
         return 0
     fi
@@ -391,9 +391,13 @@ offer_claude_plugin() {
     say "Set up the Claude Code plugin? This adds the marketplace $REPO"
     say "from GitHub and installs the plugin \"sds\" into ~/.claude (user scope). The plugin is"
     printf '  %s ' "not signature-checked like the sds binary. [y/N]"
-    # EOF or a closed terminal must not end the script under set -e after a finished install.
-    answer=''
-    read -r answer <"$TTY_IN" || { answer=n; blank; }
+    # EOF, a closed terminal or Ctrl-C must not end the script after a finished install:
+    # under set -e a failed read would, and the INT trap would exit 130. All of them mean
+    # no. The read runs in a command substitution so that Ctrl-C ends it (the subshell has
+    # the default INT action) while this shell only runs ':'; a plain read would resume.
+    trap ':' INT
+    answer=$(read -r reply <"$TTY_IN" && printf '%s' "$reply") || { answer=n; blank; }
+    trap 'exit 130' INT
     case "$answer" in
         y | Y | yes | Yes | YES) ;;
         *)
