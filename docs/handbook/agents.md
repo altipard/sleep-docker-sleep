@@ -67,9 +67,10 @@ The skill sets ground rules. The most important ones:
   runs `sds update` or `sds service install` on its own.
 - It never prints the admin token. `sds integrate` writes the token in clear text into
   the proxy snippet; the agent shows the snippet only with the token lines hidden, writes
-  the file as a new file with mode 0600 (0640 for the proxy's group; into root-owned
-  directories via `sudo install -m 600`), uses the Traefik file provider instead of
-  container labels, and keeps the file out of git.
+  it through a temporary file that is removed even on Ctrl-C and installs it with
+  `install -m 600` (`-m 640 -g <group>` for a proxy that reads its config as a non-root
+  user), uses the Traefik file provider instead of container labels, and keeps the file
+  out of git.
 - It knows that `sds wake` does not keep a group awake (it sleeps again after
   `idle_timeout` without requests through the proxy) and that a `504` from
   `sds wake --wait` is not a failed start.

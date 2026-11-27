@@ -103,37 +103,52 @@ contains the token in clear text** (ground rule 5). Steps:
 
    Hidden lines mean a token is set; check that the sds address is the one the proxy can
    reach.
-3. Write the file without group or world read, after the user agreed. Remove an old file
-   first: the umask only applies to new files, an existing 0644 file keeps its mode.
+3. Write the file after the user agreed, always with this recipe, for any target. It
+   writes a temporary file (`mktemp` creates it with mode 0600) in a subshell whose trap
+   removes it on exit, Ctrl-C or kill, and installs it with a fixed mode, which also
+   applies to an existing target (`umask` would only cover new files). The guard compares
+   the snippet with the config: `sds config` shows a set token as `token = "<redacted>"`,
+   and then the snippet must contain it. Without `admin.token` (loopback `admin.bind`, the
+   usual host nginx setup) a snippet without token is expected. `sds config` also exits 1
+   on an unreadable config, so it catches what `sds integrate` would silently replace
+   with defaults.
 
    ```bash
-   (umask 077; rm -f ./sds-shop.conf; sds -c "$cfg" integrate nginx shop \
-     --host shop.example.com --upstream http://127.0.0.1:18080 > ./sds-shop.conf)
-   grep -c X-SDS-Token ./sds-shop.conf    # count only; 0 means no token was written
+   cfg=/etc/sds/sds.toml                    # the config the daemon runs with
+   dest=/etc/nginx/snippets/sds-shop.conf
+   (
+     tmp=$(mktemp) || exit 1
+     trap 'rm -f "$tmp"' EXIT
+     trap 'exit 130' INT
+     trap 'exit 143' TERM
+     conf=$(sds -c "$cfg" config) || exit 1
+     sds -c "$cfg" integrate nginx shop --host shop.example.com \
+       --upstream http://127.0.0.1:18080 > "$tmp" || exit 1
+     n=$(grep -c X-SDS-Token "$tmp")        # count only, never the lines
+     case $conf in
+       *'token = "<redacted>"'*)
+         [ "$n" -gt 0 ] || { echo "error: admin.token is set but missing from the snippet" >&2; exit 1; } ;;
+       *) echo "note: no admin.token in $cfg, so the snippet has none (expected)" ;;
+     esac
+     sudo install -m 600 "$tmp" "$dest"
+   )
    ```
 
-   Into a root-owned directory, do not run `sds` through `sudo sh -c`: sudo drops
-   `SDS_CONFIG`, `~` becomes root's and `sds` may not be on sudo's `PATH`, so the snippet
-   comes out without token or fails. Write a temporary file as the user (`mktemp` creates
-   it with mode 0600) and install it with a fixed mode, which also applies to an existing
-   target:
+   Adjust only these parts:
 
-   ```bash
-   tmp=$(mktemp) &&
-     sds -c "$cfg" integrate nginx shop --host shop.example.com > "$tmp" &&
-     grep -c X-SDS-Token "$tmp" &&
-     sudo install -m 600 "$tmp" /etc/nginx/snippets/sds-shop.conf
-   rm -f "$tmp"
-   ```
+   - **Mode and group** are the arguments of the last line. nginx reads its config as
+     root: `-m 600`. A proxy that reads its config as a non-root user (Caddy usually runs
+     as `caddy`) gets group read and nothing more: `sudo install -m 640 -g caddy "$tmp" "$dest"`.
+   - **A target you own** (`dest=./sds-shop.conf`): the same line without `sudo`.
+   - **A config only root can read**: put `sudo "$(command -v sds)"` in place of `sds` in
+     both calls and keep the redirects in the user shell. Do not run the recipe through
+     `sudo sh -c`: sudo drops `SDS_CONFIG`, `~` becomes root's and `sds` may not be on
+     sudo's `PATH`.
+   - **Traefik**: replace the `integrate` line as shown under "Per proxy".
 
-   `grep -c` exits 1 at a count of 0, so the chain stops before installing a snippet
-   without token. If only root can read the config, run just `sds` with sudo and keep the redirect in
-   the user shell: `sudo "$(command -v sds)" -c "$cfg" integrate nginx shop > "$tmp"`.
-4. If the proxy reads its config as a non-root user (Caddy usually runs as `caddy`), give
-   only that group read access: `sudo install -m 640 -g <proxy group> "$tmp" FILE`, or for
-   a file you own `chgrp <proxy group> FILE; chmod 640 FILE`. nginx reads its config as
-   root, so 0600 is enough.
-5. Keep the file out of git, tell the user where it is, and leave reloading the proxy to
+   A kill that cannot be trapped (`kill -9`, a hard tool timeout) leaves the temporary
+   file behind; it is still mode 0600, remove it.
+4. Keep the file out of git, tell the user where it is, and leave reloading the proxy to
    the user.
 
 Per proxy:
@@ -146,14 +161,13 @@ Per proxy:
 - **Traefik**: no fail-open; an unreachable sds means 500. Use the dynamic configuration
   (file provider) part, not the container-label variant at the end of the output: labels
   put the token into the compose file and `docker inspect`. This writes only the file
-  provider part:
+  provider part; in the recipe of step 3 it replaces the `integrate` line (the
+  variable keeps a failing `sds` from producing an empty file, and is never printed):
 
   ```bash
-  (umask 077; rm -f ./sds-shop.yml; sds -c "$cfg" integrate traefik shop \
-    --host shop.example.com --upstream http://app:80 \
-    --sds-url http://host.docker.internal:9900 \
-    | sed '/^# --- or as container labels/,$d' > ./sds-shop.yml)
-  grep -c X-SDS-Token ./sds-shop.yml     # count only
+  snip=$(sds -c "$cfg" integrate traefik shop --host shop.example.com \
+    --upstream http://app:80 --sds-url http://host.docker.internal:9900) || exit 1
+  printf '%s\n' "$snip" | sed '/^# --- or as container labels/,$d' > "$tmp"
   ```
 
   If labels are required, put them into a compose override file that is not committed.

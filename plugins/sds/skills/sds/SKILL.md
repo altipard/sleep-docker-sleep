@@ -24,8 +24,8 @@ the handbook. Handbook: https://altipard.github.io/sleep-docker-sleep/
    start may take up to `start_timeout` (default 90 s). Check `sds status` until the group
    is `running` or `failed`.
 4. **Configuration belongs to the user.** Change labels, compose files, `sds.toml` or
-   service units only when asked, and show the change first; a change that contains the
-   admin token is shown masked (rule 5). Never recreate containers,
+   service units only when asked, and show the change first; in a change that contains the
+   admin token, the lines carrying it are hidden (rule 5). Never recreate containers,
    restart sds, run `sds update` or `sds service install` on your own. `sds.toml` changes
    need a restart of sds. Read the effective config with `sds config` (token redacted), not
    by printing `sds.toml`.
@@ -36,26 +36,30 @@ the handbook. Handbook: https://altipard.github.io/sleep-docker-sleep/
      `sds integrate nginx shop | sed -E '/[Xx]-[Ss][Dd][Ss]-[Tt][Oo][Kk][Ee][Nn]/s/^([[:space:]#]*).*/\1<line with X-SDS-Token hidden>/'`.
      Check the sds address in the preview: by default it comes from `admin.bind` of the
      config that was read.
-   - `sds integrate` silently uses built-in defaults (no token, default `admin.bind`) when
-     it cannot read the config, even with `-c`. Pass the daemon's config explicitly
-     (`sds -c <path>`; `sds config --path` shows which one the CLI would use) and after
-     writing check the token count without showing it: `grep -c X-SDS-Token FILE` must
-     not be 0.
-   - Write the file without group or world read, and remove an old one first: `umask`
-     only applies to new files, an existing 0644 file keeps its mode.
-     `(umask 077; rm -f ./sds-shop.conf; sds -c <path> integrate nginx shop > ./sds-shop.conf)`.
-   - Into a root-owned directory do not run `sds` through `sudo sh -c` (sudo drops
-     `SDS_CONFIG`, `~` is root's, `sds` may not be on its `PATH`). Write a temporary file
-     as the user, then install it with a fixed mode:
-     `tmp=$(mktemp) && sds -c <path> integrate nginx shop > "$tmp" && sudo install -m 600 "$tmp" /etc/nginx/snippets/sds-shop.conf; rm -f "$tmp"`.
-     If the config is readable only by root, run only `sds` with sudo and keep the
-     redirect in the user shell: `sudo "$(command -v sds)" -c <path> integrate … > "$tmp"`.
-   - If the proxy reads its config as a non-root user (Caddy usually runs as `caddy`),
-     give that group read access only: `sudo install -m 640 -g <proxy group> "$tmp" FILE`,
-     or for a user-owned file `chgrp <proxy group> FILE; chmod 640 FILE`. nginx reads
-     config as root, so 0600 is enough.
+   - Write the file only with the recipe in
+     [references/setup.md](references/setup.md) (Wake path, step 3); do not improvise
+     one. It covers what a hand-made command gets wrong:
+     - Pass the daemon's config explicitly (`sds -c <path>`; `sds config --path` shows
+       which one the CLI would use). `sds integrate` silently uses built-in defaults (no
+       token, default `admin.bind`) when it cannot read the config, even with `-c`;
+       `sds config` exits 1 instead, so the recipe runs it first.
+     - The token guard is conditional: if `sds -c <path> config` shows
+       `token = "<redacted>"`, `grep -c X-SDS-Token` on the snippet must not be 0;
+       without `admin.token` (loopback `admin.bind`, the usual host nginx setup) 0 is
+       expected. Count only, never print the lines.
+     - The snippet goes to a `mktemp` file inside a subshell with
+       `trap 'rm -f "$tmp"' EXIT` (plus INT and TERM), so an interrupt does not leave the
+       clear-text token behind, and the trap does not leak into your shell.
+     - Mode and group are arguments of the one `install` line, which also fixes the mode
+       of an existing file (`umask` only covers new files): `sudo install -m 600` for
+       nginx (reads config as root), `sudo install -m 640 -g caddy` for a proxy that
+       reads as a non-root user, without `sudo` for a target you own.
+     - Never run `sds` through `sudo sh -c` (sudo drops `SDS_CONFIG`, `~` is root's,
+       `sds` may not be on its `PATH`). If only root can read the config, use
+       `sudo "$(command -v sds)"` for the `sds` calls and keep the redirects in your
+       shell.
    - Traefik: use the file-provider part of the snippet (dynamic configuration), not the
-     container-label variant; cut it with `sed '/^# --- or as container labels/,$d'`. The
+     container-label variant; the recipe cuts it with `sed '/^# --- or as container labels/,$d'`. The
      labels put the token into the compose file, which is usually in git, and into
      `docker inspect` output. If labels are required, put them into a compose override
      file that is not committed.
