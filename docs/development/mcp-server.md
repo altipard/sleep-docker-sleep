@@ -1,8 +1,8 @@
 # Built-in MCP server: design
 
-Status: proposal, nothing implemented. Verified against `origin/develop` at `d8e932e`
-(file:line references are to that commit). Statements marked **assumption** or
-**unverified** were not checked.
+Status: proposal, nothing implemented. Verified against `develop` at `8841c7e`
+(file:line references are to that commit; first written against `d8e932e`).
+Statements marked **assumption** or **unverified** were not checked.
 
 ## Goal
 
@@ -18,11 +18,11 @@ Non-goals: a general Docker tool, log access, running commands in containers, re
 
 | # | Use case | Today | Gap |
 |---|---|---|---|
-| 1 | Wake the stack before tests | Yes: `POST /groups/{g}/wake?wait=true` (`admin/api.rs:62-90`), CLI `sds wake --wait` (`cli/status.rs:162`) | Wait is bounded by the group's `hold_timeout` (default 60 s, `config/settings.rs:183`; `controller/handle.rs:160`), not `start_timeout` (90 s, `settings.rs:178`). A `504 timeout` therefore does **not** mean the start failed; it can still be `starting`. The adapter must keep polling. |
+| 1 | Wake the stack before tests | Yes: `POST /groups/{g}/wake?wait=true` (`admin/api.rs:62-90`), CLI `sds wake --wait` (`cli/status.rs:166`) | Wait is bounded by the group's `hold_timeout` (default 60 s, `config/settings.rs:183`; `controller/handle.rs:160`), not `start_timeout` (90 s, `settings.rs:178`). A `504 timeout` therefore does **not** mean the start failed; it can still be `starting`. The adapter must keep polling. |
 | 2 | Keep the stack up while working, release after | **No.** `hold` means the opposite: it stops the group and blocks wakes (`api.rs:110-113`). An operator wake does not count as activity (`api.rs:74-79` calls `force_wake`, not `touch`), so a woken group is stopped after `idle_timeout` (default 15 min, `settings.rs:177`; `actor.rs:476-481`) unless requests flow through the proxy. Tests that hit published ports directly are invisible to `sds` (`docs/handbook/limitations.md`, "counts requests, not connections"). | Needs a keep-awake lease with TTL (gap C). `handle.begin_inflight()` (`handle.rs:78`) already blocks idle stop and can back it. |
 | 3 | Hold a group down during maintenance | `POST …/hold` and `…/release` work (`api.rs:111-128`) | A hold has **no expiry and no owner** and lives only in memory (`controller/registry.rs:35-36`, `docs/handbook/roadmap.md` "Hold that survives a restart"). A dead agent leaves the group down until a human releases it (gap A). |
 | 4 | What is running that I do not need (managed groups) | Yes: status has `state`, `last_activity_ms`, `requests_total` and `sleeps_in_ms()` (`controller/snapshot.rs:40-67, 94`) | None for managed groups. The agent can rank by idle time and call `sleep`. |
-| 5 | What is running that is **not** managed | **No.** `discover()` only emits labelled or `[groups.*]` containers (`docker/discovery.rs:56-140`). Everything else, and containers with `keep_awake` or `sds.enable=false`, is dropped without a trace (`discovery.rs:99-107`). `Backend::list()` returns all containers (`docker/backend.rs:74-76`) but no API route exposes it. `sds check` talks to Docker directly (`cli/check.rs:30,56`), so it only works where the Docker socket is reachable. | New read-only endpoint `GET /api/v1/containers` with a reason per container (gap B). `ContainerInfo` has only id, name, labels, running, status (`backend.rs:34-46`): no image, ports or resource usage. "Unneeded" can be judged only by state and compose project, not by CPU or memory. |
+| 5 | What is running that is **not** managed | **No.** `discover()` only emits labelled or `[groups.*]` containers (`docker/discovery.rs:56-140`). Everything else, and containers with `keep_awake` or `sds.enable=false`, is dropped without a trace (`discovery.rs:99-107`). `Backend::list()` returns all containers (`docker/backend.rs:74-76`) but no API route exposes it. `sds check` talks to Docker directly (`cli/check.rs:30,56`), so it only works where the Docker socket is reachable. | New read-only endpoint `GET /api/v1/containers` with a reason per container (gap B). `ContainerInfo` has only id, name, labels, running, status, health, has_healthcheck (`backend.rs:34-46`): no image, ports or resource usage. "Unneeded" can be judged only by state and compose project, not by CPU or memory. |
 | 6 | Why did this group fail to start | Mostly: `last_error`, `warnings`, per-member `health` and `running` (`snapshot.rs:62-64`) plus the global event ring (`controller/events.rs:25-30, 72-74`; `status.events`). Events carry `group`, so the adapter can filter. | No container logs: `Backend` has no log call (`backend.rs:69-84`). Deliberately not added (see section 4). |
 | 7 | Which containers need which labels | Partly: the label set is `config/labels.rs:100-115`; group naming rules `labels.rs:63`; patterns in `docs/handbook/labels.md`. Discovery warnings name broken containers (`discovery.rs:95,104`). | Needs the unmanaged list (gap B) and a pure function container -> suggested labels. The label list is a local `const` inside `parse_labels` (`labels.rs:100`), so it must be hoisted to share it with the suggestion text. Suggestions are text only; the server never edits compose files. |
 
@@ -53,7 +53,7 @@ Non-goals: a general Docker tool, log access, running commands in containers, re
 | Lifecycle | One child process per client session, dies with the client. A crash cannot take the daemon down. | Long-lived, shared by all agents; needs session identity and per-session state. |
 | Docker-socket privileges | None. The adapter never talks to Docker; the daemon stays the only holder of the socket. | The privileged process gains a new, model-reachable attack surface. |
 | Dependencies | `rmcp` with server + stdio, in the CLI path only. | `rmcp` + axum integration (`transport-streamable-http-server`, more crates) in the daemon. |
-| Fit with existing code | `ApiClient` is already `pub` (`cli/mod.rs:17`) and tested against a mock axum server (`client.rs:102-170`). | New server stack next to the admin router. |
+| Fit with existing code | `ApiClient` is already `pub` (`cli/mod.rs:17`) and tested against a mock axum server (`client.rs:102-171`). | New server stack next to the admin router. |
 | Weak points | stdout is the protocol, so nothing may print to it; tracing must go to stderr (the daemon's `init_tracing` is private to `cli/run.rs:169`, the adapter needs its own). Older daemon after `sds update` (section 6). | The daemon cannot tell which agent did what without extra plumbing. |
 
 **Recommendation: stdio adapter** (`sds mcp`), a thin layer over the admin API. Every
@@ -220,8 +220,8 @@ subcommands.
 ### Audit log
 
 One JSON object per tool call (JSON Lines), written through `tracing` to **stderr**:
-stdout is the protocol channel on stdio, and the daemon already logs to stderr
-(`cli/run.rs:175-185`). Fields: `ts`, `session` (random id), `tool`, `mode`, `group` (if
+stdout is the protocol channel on stdio, and the daemon already logs to stderr unless the
+TUI is attached (`cli/run.rs:174-187`). Fields: `ts`, `session` (random id), `tool`, `mode`, `group` (if
 any), `outcome` (`ok`, `denied`, `error`, `rate_limited`), `http_status`, `duration_ms`.
 Not logged: tokens, tool results, free text.
 
@@ -252,7 +252,8 @@ Checked on 2026-11-25.
   `default-features = false, features = ["server","macros","transport-io"]` drops
   `base64` safely.
 - Dependency weight, measured by locking our own `Cargo.toml` plus rmcp with
-  `server` + `transport-io`: `Cargo.lock` grows from 384 to **411 packages (+27)**:
+  `server` + `transport-io`: `Cargo.lock` grows from 384 to **411 packages (+27)**, measured at `d8e932e`
+  (`Cargo.lock` still has 384 packages at `8841c7e`):
   rmcp, rmcp-macros, schemars (+derive, dyn-clone, ref-cast), chrono (+iana-time-zone,
   windows crates), futures-executor, sha2/digest stack, pastey,
   unicode-normalization and others. Release binary size delta: **not measured**.
@@ -310,8 +311,8 @@ unknown tools.
 Same bar as `docs/development/production-hardening.tdd.md` (RED then GREEN per behaviour,
 80 % line coverage, `cargo +1.88.0 check --locked`, clippy `-D warnings`).
 
-- Tool layer against the mock axum server pattern (`cli/client.rs:102-170`) and against the
-  real admin router with `test_support::registry` (`admin/tests.rs:20-27`).
+- Tool layer against the mock axum server pattern (`cli/client.rs:102-171`) and against the
+  real admin router with `test_support::registry` (`admin/tests.rs:24-29`).
 - stdio contract via `assert_cmd` (`tests/cli.rs`): spawn `sds mcp` against a mock daemon,
   send `initialize`, `tools/list`, `tools/call`; assert **stdout contains only JSON-RPC
   lines**; assert write tools are absent in read-only mode; golden `tools/list` snapshot
