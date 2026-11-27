@@ -32,19 +32,33 @@ the handbook. Handbook: https://altipard.github.io/sleep-docker-sleep/
 5. **The proxy snippet contains the admin token.** With `admin.token` set,
    `sds integrate` writes it in clear text into the snippet. Never print, `cat` or quote
    the snippet or the file it went into.
-   - To show the change (rule 4), mask the token:
-     `sds integrate nginx shop | sed -E 's/(X-SDS-Token:? )"[^"]+"/\1"<redacted>"/'`.
-   - Write the file without group or world read: `(umask 077; sds integrate nginx shop >
-     ./sds-shop.conf)`. A plain `>` uses the umask, often 0644, so every local user can
-     read the token. With sudo the redirect must run inside the root shell:
-     `sudo sh -c 'umask 077; sds integrate nginx shop > /etc/nginx/snippets/sds-shop.conf'`.
+   - To show the change (rule 4), hide every line that carries the token:
+     `sds integrate nginx shop | sed -E '/[Xx]-[Ss][Dd][Ss]-[Tt][Oo][Kk][Ee][Nn]/s/^([[:space:]#]*).*/\1<line with X-SDS-Token hidden>/'`.
+     Check the sds address in the preview: by default it comes from `admin.bind` of the
+     config that was read.
+   - `sds integrate` silently uses built-in defaults (no token, default `admin.bind`) when
+     it cannot read the config, even with `-c`. Pass the daemon's config explicitly
+     (`sds -c <path>`; `sds config --path` shows which one the CLI would use) and after
+     writing check the token count without showing it: `grep -c X-SDS-Token FILE` must
+     not be 0.
+   - Write the file without group or world read, and remove an old one first: `umask`
+     only applies to new files, an existing 0644 file keeps its mode.
+     `(umask 077; rm -f ./sds-shop.conf; sds -c <path> integrate nginx shop > ./sds-shop.conf)`.
+   - Into a root-owned directory do not run `sds` through `sudo sh -c` (sudo drops
+     `SDS_CONFIG`, `~` is root's, `sds` may not be on its `PATH`). Write a temporary file
+     as the user, then install it with a fixed mode:
+     `tmp=$(mktemp) && sds -c <path> integrate nginx shop > "$tmp" && sudo install -m 600 "$tmp" /etc/nginx/snippets/sds-shop.conf; rm -f "$tmp"`.
+     If the config is readable only by root, run only `sds` with sudo and keep the
+     redirect in the user shell: `sudo "$(command -v sds)" -c <path> integrate … > "$tmp"`.
    - If the proxy reads its config as a non-root user (Caddy usually runs as `caddy`),
-     give that group read access only: `chgrp <proxy group> FILE; chmod 640 FILE`. nginx
-     reads config as root, so 0600 is enough.
+     give that group read access only: `sudo install -m 640 -g <proxy group> "$tmp" FILE`,
+     or for a user-owned file `chgrp <proxy group> FILE; chmod 640 FILE`. nginx reads
+     config as root, so 0600 is enough.
    - Traefik: use the file-provider part of the snippet (dynamic configuration), not the
-     container-label variant. The labels put the token into the compose file, which is
-     usually in git, and into `docker inspect` output. If labels are required, put them into
-     a compose override file that is not committed.
+     container-label variant; cut it with `sed '/^# --- or as container labels/,$d'`. The
+     labels put the token into the compose file, which is usually in git, and into
+     `docker inspect` output. If labels are required, put them into a compose override
+     file that is not committed.
    - Keep the file out of git and tell the user where it is.
 6. **No hold without an end.** A hold has no expiry: the group stays down until
    `sds release` or a restart of sds. Hold only when the user asks, name the release

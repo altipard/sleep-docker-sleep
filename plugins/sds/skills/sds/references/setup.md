@@ -89,29 +89,51 @@ Where the proxy reaches sds (`--sds-url`):
 As soon as `admin.bind` is not loopback, `admin.token` is required, and **the snippet then
 contains the token in clear text** (ground rule 5). Steps:
 
-1. Preview only masked:
+1. Find the config the daemon uses (`sds config --path` shows the CLI's choice; a service
+   unit names it with `--config`). `sds integrate` silently falls back to built-in
+   defaults, without token and with the default `admin.bind`, when it cannot read that
+   file, even with `-c`. So always pass it explicitly. The examples use
+   `cfg=/etc/sds/sds.toml`.
+2. Preview with every token line hidden:
 
    ```bash
-   sds integrate nginx shop --host shop.example.com --upstream http://127.0.0.1:18080 \
-     | sed -E 's/(X-SDS-Token:? )"[^"]+"/\1"<redacted>"/'
+   sds -c "$cfg" integrate nginx shop --host shop.example.com --upstream http://127.0.0.1:18080 \
+     | sed -E '/[Xx]-[Ss][Dd][Ss]-[Tt][Oo][Kk][Ee][Nn]/s/^([[:space:]#]*).*/\1<line with X-SDS-Token hidden>/'
    ```
 
-2. Write the file without group or world read, after the user agreed:
+   Hidden lines mean a token is set; check that the sds address is the one the proxy can
+   reach.
+3. Write the file without group or world read, after the user agreed. Remove an old file
+   first: the umask only applies to new files, an existing 0644 file keeps its mode.
 
    ```bash
-   (umask 077; sds integrate nginx shop --host shop.example.com \
-     --upstream http://127.0.0.1:18080 > ./sds-shop.conf)
+   (umask 077; rm -f ./sds-shop.conf; sds -c "$cfg" integrate nginx shop \
+     --host shop.example.com --upstream http://127.0.0.1:18080 > ./sds-shop.conf)
+   grep -c X-SDS-Token ./sds-shop.conf    # count only; 0 means no token was written
    ```
 
-   Into a root-owned directory the redirect must run inside the root shell:
-   `sudo sh -c 'umask 077; sds integrate nginx shop > /etc/nginx/snippets/sds-shop.conf'`.
-   The umask only applies to a new file: an existing file keeps its mode, so run
-   `chmod 600 FILE` before overwriting it (a re-run, a rotated token).
+   Into a root-owned directory, do not run `sds` through `sudo sh -c`: sudo drops
+   `SDS_CONFIG`, `~` becomes root's and `sds` may not be on sudo's `PATH`, so the snippet
+   comes out without token or fails. Write a temporary file as the user (`mktemp` creates
+   it with mode 0600) and install it with a fixed mode, which also applies to an existing
+   target:
 
-3. If the proxy reads its config as a non-root user (Caddy usually runs as `caddy`), give
-   only that group read access: `chgrp <proxy group> FILE; chmod 640 FILE`. nginx reads
-   its config as root, so 0600 is enough.
-4. Keep the file out of git, tell the user where it is, and leave reloading the proxy to
+   ```bash
+   tmp=$(mktemp) &&
+     sds -c "$cfg" integrate nginx shop --host shop.example.com > "$tmp" &&
+     grep -c X-SDS-Token "$tmp" &&
+     sudo install -m 600 "$tmp" /etc/nginx/snippets/sds-shop.conf
+   rm -f "$tmp"
+   ```
+
+   `grep -c` exits 1 at a count of 0, so the chain stops before installing a snippet
+   without token. If only root can read the config, run just `sds` with sudo and keep the redirect in
+   the user shell: `sudo "$(command -v sds)" -c "$cfg" integrate nginx shop > "$tmp"`.
+4. If the proxy reads its config as a non-root user (Caddy usually runs as `caddy`), give
+   only that group read access: `sudo install -m 640 -g <proxy group> "$tmp" FILE`, or for
+   a file you own `chgrp <proxy group> FILE; chmod 640 FILE`. nginx reads its config as
+   root, so 0600 is enough.
+5. Keep the file out of git, tell the user where it is, and leave reloading the proxy to
    the user.
 
 Per proxy:
@@ -127,9 +149,11 @@ Per proxy:
   provider part:
 
   ```bash
-  (umask 077; sds integrate traefik shop --host shop.example.com \
-    --upstream http://app:80 --sds-url http://host.docker.internal:9900 \
+  (umask 077; rm -f ./sds-shop.yml; sds -c "$cfg" integrate traefik shop \
+    --host shop.example.com --upstream http://app:80 \
+    --sds-url http://host.docker.internal:9900 \
     | sed '/^# --- or as container labels/,$d' > ./sds-shop.yml)
+  grep -c X-SDS-Token ./sds-shop.yml     # count only
   ```
 
   If labels are required, put them into a compose override file that is not committed.
