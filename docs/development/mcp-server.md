@@ -498,7 +498,7 @@ Commands and flags the skill names, checked against `src/cli/` at `8841c7e`:
 (`cli/init.rs:10-20`); `sds config [--path]` (`cli/mod.rs:75-79`, prints `admin.token` as
 `<redacted>`, `config/file.rs:35,60`); `sds update [--check] [--tag] [--force]`
 (`cli/update.rs:17-27`); `sds service install` (`cli/service.rs:16-22`); `sds --help` and
-`sds --version` (clap, `cli/mod.rs:22`). Only `--config` is global (`cli/mod.rs:24-26`);
+`sds --version` (clap, `cli/mod.rs:22`). Only `--config` (`-c`) is global (`cli/mod.rs:24-26`);
 `--url` and `--token` (`ClientArgs`, `cli/mod.rs:63-72`) exist only on `status`, `wake`,
 `sleep`, `hold`, `release` and `top` (`cli/status.rs:12-58`), so `commands.md` lists them
 per command.
@@ -545,24 +545,31 @@ https://altipard.github.io/sleep-docker-sleep/
 5. **The proxy snippet contains the admin token.** With `admin.token` set,
    `sds integrate` writes it in clear text into the snippet. Never print, `cat` or quote
    the snippet or the file it went into.
-   - To show the change (rule 4), mask every line that mentions the header, in any case
-     and quoting:
-     `sds integrate nginx shop | sed -E 's/([Xx]-[Ss][Dd][Ss]-[Tt][Oo][Kk][Ee][Nn]).*/\1 <redacted>/'`
-     (bracket classes because BSD sed has no case-insensitive flag).
-   - Write the file without group or world read. A plain `>` creates it with the umask,
-     often 0644, so every local user can read the token. `umask 077` applies only when the
-     file is created: overwriting an existing 0644 file keeps 0644. So remove it first:
-     `(umask 077; rm -f ./sds-shop.conf; sds integrate nginx shop > ./sds-shop.conf)`.
-   - Root-owned target (proxy config under `/etc`): run `sds integrate` as the user, not
-     under `sudo sh -c`. sudo drops `SDS_CONFIG`, `~` becomes root's home and `sds` may not
-     be on `secure_path`, so the snippet could lack the token or use the wrong
-     `admin.bind`. Write to a user-owned temp file and install it with an explicit mode:
-     `tmp=$(mktemp) && sds integrate nginx shop > "$tmp" && sudo install -m 600 "$tmp"
-     /etc/nginx/snippets/sds-shop.conf; rm -f "$tmp"` (`mktemp` creates the file 0600;
-     `install -m` sets the mode on the target, whether it existed or not).
-   - If the proxy reads its config as a non-root user (Caddy usually runs as `caddy`),
-     install with group read only: `sudo install -m 640 -g <proxy group> "$tmp" FILE`.
-     nginx reads config as root, so 0600 is enough.
+   - To show the change (rule 4), hide every line that carries the token:
+     `sds integrate nginx shop | sed -E '/[Xx]-[Ss][Dd][Ss]-[Tt][Oo][Kk][Ee][Nn]/s/^([[:space:]#]*).*/\1<line with X-SDS-Token hidden>/'`
+     (bracket classes because BSD sed has no case-insensitive flag). Check the sds address
+     in the preview: by default it comes from `admin.bind` of the config that was read.
+   - Write the file only with the recipe in `references/setup.md` (Wake path, step 3); do
+     not improvise one. The skill is the single source for the script; this design only
+     states what it must do:
+     - Pass the daemon's config explicitly (`sds -c "$cfg"`). `sds integrate` silently uses
+       built-in defaults (no token, default `admin.bind`) when it cannot read the config,
+       even with `-c` (known gap, risk 13); `sds -c "$cfg" config` exits 1 instead, so the
+       recipe runs it first and stops on failure.
+     - The token guard is conditional: if that `config` output shows
+       `token = "<redacted>"`, `grep -c X-SDS-Token` on the snippet must be greater than 0;
+       without `admin.token` (loopback `admin.bind`, the usual host nginx setup) 0 is
+       expected. Count only, never print the lines.
+     - The snippet goes to a `mktemp` file (mode 0600) inside a subshell with
+       `trap 'rm -f "$tmp"' EXIT` plus INT and TERM traps, so an interrupt does not leave
+       the clear-text token behind and the traps do not leak into the agent's shell.
+     - Mode and group are fixed arguments of the one `install` line, which also sets the
+       mode of an existing target (`umask` only covers new files): `sudo install -m 600`
+       for nginx (reads config as root), `sudo install -m 640 -g caddy` for a proxy that
+       reads as a non-root user, without `sudo` for a target the user owns.
+     - Never `sudo sh -c` (sudo drops `SDS_CONFIG`, `~` is root's, `sds` may not be on
+       its `PATH`). If only root can read the config, `sudo "$(command -v sds)"` for the
+       `sds` calls, with the redirects in the user's shell.
    - Traefik: use the file-provider part of the snippet (dynamic configuration), not the
      container-label variant. The labels put the token into the compose file, which is
      usually in git, and into `docker inspect` output. If labels are required, put them into
@@ -776,11 +783,11 @@ container that stage 2 extends.
    text into the snippet (`src/integrate/mod.rs:61,136,173`, Traefik labels `:185-190`,
    `cli/integrate.rs:44`); an agent that shows it puts the token into the transcript and
    the provider's logs, and a plain `>` leaves it readable for every local user. Skill
-   rule 5: show only masked (every line naming the header, any case), write with
-   `umask 077` after removing an existing file (umask does not tighten an overwrite),
-   install root-owned targets from a user-owned temp file with `sudo install -m 600`
-   (640 with the proxy group where needed) instead of running `sds integrate` under sudo,
-   Traefik via the file provider, never commit. A real fix is a
+   rule 5 and the recipe in `references/setup.md` (single source): preview with token
+   lines hidden; `sds -c "$cfg" config` first; token count checked only when a token is
+   configured; `mktemp` in a subshell with trap cleanup; one `install` line with fixed
+   mode and group (600, or 640 with the proxy group); no `sudo sh -c`; Traefik via the
+   file provider; never commit. A real fix is a
    `--token-file`/placeholder option in `sds integrate` (not planned yet).
 9. **Stage-1 rules are advice only.** The agent has the user's shell and Docker access;
    read-only, exact-name writes and hold limits are not enforced until stage 2.
@@ -796,6 +803,13 @@ container that stage 2 extends.
     repo, only in the GitHub settings), the prompt states it, and pinning
     the marketplace or plugin to a release tag (**unverified** whether Claude Code
     supports a ref for GitHub marketplaces).
+13. **`sds integrate` silently falls back to defaults.** When it cannot read the config,
+    even one passed with `-c`, it renders the snippet with built-in defaults
+    (`src/cli/integrate.rs:29`, `config::load(...).unwrap_or_default()`): no token,
+    default `admin.bind` and `hold_timeout`, exit 0. The proxy then fails auth or points
+    to the wrong address. The skill recipe catches it by running `sds config` first.
+    Follow-up: `fix(integrate): fail on an unreadable config` (error for an explicit
+    `-c`/`SDS_CONFIG`, as `sds config` does).
 
 ### Open questions (recommended answer first)
 
@@ -833,10 +847,11 @@ a starting point. Question 15 stays open.
     handbook snippets first, setup only on demand (section 7).
 16. Commit type of PR 1? **Decided: `feat(plugin)`, releases a minor version.** Plugin and
     installer step are user-facing behaviour (reasons under the table above).
-17. Token handling in the skill? **Decided: strict.** Rule 5: the snippet is shown only
-    with the token masked, the file is written with `umask 077` after `rm -f` or installed
-    with `sudo install -m 600` (640 with the proxy group where the proxy needs it),
-    Traefik via the file provider instead of labels, never committed.
+17. Token handling in the skill? **Decided: strict.** Rule 5: the preview hides token
+    lines; the file is written only with the recipe in `references/setup.md` (`sds config`
+    first, conditional token count, `mktemp` with trap cleanup, one `install` line with
+    fixed mode 600 or 640 with the proxy group, no `sudo sh -c`); Traefik via the file
+    provider instead of labels; never committed.
 
 ## Sources
 
