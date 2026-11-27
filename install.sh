@@ -10,6 +10,8 @@
 #                    Only signed releases (0.4.1 and later) can be installed.
 #   SDS_INSTALL_DIR  target directory (default: /usr/local/bin if writable, else ~/.local/bin)
 #   NO_COLOR         disable colors and the logo (https://no-color.org)
+#   SDS_NO_CLAUDE    set to 1 to skip the optional Claude Code plugin step at the end. The step
+#                    only asks on a terminal with `claude` on PATH, never in CI or as root.
 #
 # Strict POSIX sh. Everything runs inside main(), which is called on the last line, so a
 # truncated download executes nothing.
@@ -25,6 +27,10 @@ RELEASE_KEY_B64='MCowBQYDK2VwAyEAUpfnMu4T/uGhPdEk3yL2OmY1r6DMBccAGFpdyXDsVW8='
 # Signature of the string `sds-release-key-check` (same vector as the test in update.rs). Used to
 # find an OpenSSL that can really verify Ed25519 before anything is downloaded.
 SELFTEST_SIG_B64='onFCnpf5kQkLoF7+vltET3pXr6XSamvVrQLgzpCtwAzQa231AdqQZca8d0KTfBxaN5DB3OCOhZAk8TMcBNVqDw=='
+
+# Terminal for the Claude Code prompt: under `curl | sh` stdin is the script itself.
+TTY_IN=/dev/tty
+PLUGIN_CMD="claude plugin install sds --marketplace $REPO"
 
 tmp=''
 stage=''
@@ -196,6 +202,8 @@ Environment:
   SDS_VERSION      release to install instead of the latest (e.g. 0.4.1); signed releases only
   SDS_INSTALL_DIR  target directory (default: /usr/local/bin if writable, else ~/.local/bin)
   NO_COLOR         disable colors and the logo
+  SDS_NO_CLAUDE    set to 1 to skip the optional Claude Code plugin step at the end
+                   (asked only on a terminal with claude on PATH, never in CI or as root)
 EOF
 }
 
@@ -354,6 +362,63 @@ install_binary() { # downloaded-file
     stage=''
 }
 
+# --- Claude Code plugin -------------------------------------------------------------------
+
+# A failed redirection of a special builtin ends a POSIX shell, so probe in a subshell.
+has_tty() {
+    (: <"$TTY_IN") 2>/dev/null
+}
+
+# Optional last step: the Claude Code plugin with the sds agent guidance
+# (docs/handbook/agents.md). Asks only on a terminal, default no. The plugin comes from GitHub
+# through Claude Code without the binary's signature check. Never fails the installation.
+offer_claude_plugin() {
+    if ! command -v claude >/dev/null 2>&1; then return 0; fi
+    blank
+    if [ "$(id -u)" = 0 ]; then
+        # As root the plugin would land in root's ~/.claude.
+        say "Claude Code plugin for sds: run as your own user, not root: $PLUGIN_CMD"
+        return 0
+    fi
+    if [ -n "${CI:-}" ] || [ -n "${SDS_NO_CLAUDE:-}" ] || ! [ -t 1 ] || ! has_tty; then
+        say "Claude Code plugin for sds: $PLUGIN_CMD"
+        return 0
+    fi
+    if [ "$PINNED" = 1 ]; then
+        say "SDS_VERSION pins sds $VERSION, but the plugin follows main and may name commands"
+        say "this binary lacks."
+    fi
+    say "Set up the Claude Code plugin? This adds the marketplace $REPO"
+    say "from GitHub and installs the plugin \"sds\" into ~/.claude (user scope). The plugin is"
+    printf '  %s ' "not signature-checked like the sds binary. [y/N]"
+    # EOF or a closed terminal must not end the script under set -e after a finished install.
+    answer=''
+    read -r answer <"$TTY_IN" || { answer=n; blank; }
+    case "$answer" in
+        y | Y | yes | Yes | YES) ;;
+        *)
+            say "Skipped. Install it later with: $PLUGIN_CMD"
+            return 0
+            ;;
+    esac
+    # Ctrl-C belongs to claude now: an interrupted plugin install returns here instead of
+    # ending the installer under it.
+    trap ':' INT
+    rc=0
+    claude plugin install sds --marketplace "$REPO" <"$TTY_IN" || rc=$?
+    trap 'exit 130' INT
+    case "$rc" in
+        0) ;;
+        130) say "Plugin install cancelled. Run it later: $PLUGIN_CMD" ;;
+        *)
+            say "The plugin install did not finish (exit $rc). Run it later: $PLUGIN_CMD"
+            say "or inside Claude Code: /plugin marketplace add $REPO"
+            say "then: /plugin install sds@sleep-docker-sleep"
+            ;;
+    esac
+    return 0
+}
+
 main() {
     case "${1:-}" in
         -h | --help) usage; exit 0 ;;
@@ -419,6 +484,7 @@ main() {
             say "  export PATH=\"$DEST:\$PATH\""
             ;;
     esac
+    offer_claude_plugin
     blank
     # `sds update` replaces the binary in place, so it needs write access to $DEST.
     if [ "$(id -u)" = 0 ]; then upd='sudo sds update'; else upd='sds update'; fi

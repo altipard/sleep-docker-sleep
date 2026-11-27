@@ -9,6 +9,7 @@
 - [Native proxy](native-proxy.md)
 - [Operations](operations.md)
 - [Troubleshooting](troubleshooting.md)
+- [Coding agents](agents.md)
 - [HTTP API](api.md)
 - [Limitations and known behaviour](limitations.md)
 - [Roadmap](roadmap.md)

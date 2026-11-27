@@ -1,0 +1,10 @@
+{
+  "name": "sds",
+  "displayName": "sds",
+  "description": "Guidance for setting up and operating sds (sleep-docker-sleep) with its CLI. Needs the sds binary on PATH; the plugin installs nothing else.",
+  "author": { "name": "altipard", "url": "https://github.com/altipard" },
+  "homepage": "https://github.com/altipard/sleep-docker-sleep",
+  "repository": "https://github.com/altipard/sleep-docker-sleep",
+  "license": "MIT",
+  "keywords": ["docker", "containers", "idle", "compose", "reverse-proxy"]
+}
