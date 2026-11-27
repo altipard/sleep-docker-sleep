@@ -151,7 +151,8 @@ Today: no expiry, no owner (see use case 3). Proposal:
   existing `Released` event with message "hold expired" (`events.rs:18`).
 - `owner` is informational, taken from header `X-SDS-Client: mcp/<version>`; it is not an
   authorization input. It also gives an audit trail inside the daemon for free
-  (event messages go to `/api/v1/events` and stderr, `events.rs:52-58`).
+  (event messages go to `/api/v1/events` and, through `tracing`, to stderr unless the TUI
+  is attached, `events.rs:52-58`, `cli/run.rs:174-187`).
 - A config ceiling `admin.max_hold` (e.g. 8 h) bounds any TTL.
 - The adapter also tracks holds and keep-awake leases it created and releases them on
   stdin EOF or SIGTERM. That is best effort only; SIGKILL leaves the lease, so the daemon
@@ -195,7 +196,7 @@ example a cloned repo's `docker-compose.yml`. Text paths into tool output:
 
 | Source | Where | Free text? |
 |---|---|---|
-| Group name | `sds.group` label or compose project | Whitespace and `/` rejected (`labels.rs:142`, `file.rs:213`), so no sentences, but still arbitrary characters |
+| Group name | `sds.group` label, compose project or container name | Whitespace and `/` rejected for `sds.group` and `[groups.*]` (`labels.rs:142`, `file.rs:213,227`), so no sentences there, but still arbitrary characters. A name taken from the compose project or container name is not validated by sds (`discovery.rs:108`, `labels.rs:63-65`); restricted only by Compose and Docker (**assumption**) |
 | Container name | Docker | Restricted by Docker (**assumption**: `[a-zA-Z0-9][a-zA-Z0-9_.-]`) |
 | Discovery warnings | `discovery.rs:95,104,127,151` | Yes: include the raw label error, e.g. `got {v}` (`labels.rs:82`) |
 | `last_error` | actor / Docker error messages | Yes |
@@ -492,7 +493,8 @@ Commands and flags the skill names, checked against `src/cli/` at `8841c7e`:
 (`cli/integrate.rs:10-27`, `integrate/mod.rs:8-12`); `sds init [--path] [--force] [--stdout]`
 (`cli/init.rs:10-20`); `sds config [--path]` (`cli/mod.rs:75-79`, prints `admin.token` as
 `<redacted>`, `config/file.rs:35,60`); `sds update [--check] [--tag] [--force]`
-(`cli/update.rs:17-27`); global `--config`, `--url`, `--token` (`cli/mod.rs:24-26, 65-72`).
+(`cli/update.rs:17-27`); `sds service install` (`cli/service.rs:16-22`); `sds --help` and
+`sds --version` (clap, `cli/mod.rs:22`); global `--config`, `--url`, `--token` (`cli/mod.rs:24-26, 65-72`).
 Group states are `stopped`, `starting`, `running`, `stopping`, `failed`
 (`controller/snapshot.rs:7-14`). `sds hold` has no TTL option (`cli/status.rs:53-58`). A
 failed command prints `error: …` and exits 1 (`src/main.rs:6-9`); `sds wake --wait` after
@@ -508,8 +510,8 @@ description: Sets up and operates sds (sleep-docker-sleep), which stops idle Doc
 
 # sds
 
-Works through the `sds` CLI in the shell. Check `command -v sds` and `sds --version`
-first; without the binary, point to the installer in the handbook. Handbook:
+Written for sds `<release that ships the plugin>` or later. Works through the `sds` CLI in
+the shell. Check `command -v sds` and `sds --version` first; without the binary, point to the installer in the handbook. Handbook:
 https://altipard.github.io/sleep-docker-sleep/
 
 ## Ground rules
@@ -609,8 +611,10 @@ untouched and runs before it.
   `~/.claude`, so print the command instead).
 - Asks on the terminal: `Set up the Claude Code plugin (sds skill)? [y/N]`, read from
   `/dev/tty`, default no.
-- On yes runs `claude plugin install sds --marketplace altipard/sleep-docker-sleep`. Its
-  exit status never fails the installation; on failure (for example a Claude Code older
+- On yes runs `claude plugin install sds --marketplace altipard/sleep-docker-sleep` with
+  stdin from `/dev/tty`, as sevdesk-mcp's `run_setup` does (under `curl | sh` stdin is the
+  pipe); whether this shell form prompts at all is **unverified**. Its exit status never
+  fails the installation; on failure (for example a Claude Code older
   than v2.1.292) it prints the in-session commands from above.
 - Otherwise, if `claude` is on `PATH`, one line with the install command. Without `claude`
   nothing is printed.
@@ -656,8 +660,8 @@ to it on a terminal. For sds:
 
 ## 8. Implementation plan
 
-Conventional Commits; `feat` releases a minor version. Each PR is a separate
-release-worthy step. PR 1 is stage 1; PRs 2 to 8 are stage 2 and start only if open
+Conventional Commits; `feat` releases a minor version, so PRs 1 to 7 are separate
+release-worthy steps; PR 8 (`docs`) does not release. PR 1 is stage 1; PRs 2 to 8 are stage 2 and start only if open
 question 11 says so.
 
 | PR | Content | Effort |
