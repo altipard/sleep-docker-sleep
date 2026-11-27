@@ -16,9 +16,11 @@ claude plugin install sds --marketplace altipard/sleep-docker-sleep
 ```
 
 This adds the marketplace `altipard/sleep-docker-sleep` from GitHub and installs the
-plugin for your user (`~/.claude`). Inside a Claude Code session the same works as
-`/plugin install sds --marketplace altipard/sleep-docker-sleep`. A Claude Code that does
-not know `--marketplace` needs two steps:
+plugin for your user (`~/.claude`). The command was checked with Claude Code 2.1.332.
+Minimum versions, taken from the sevdesk-mcp install docs and not tested here: 2.1.292 for
+this shell form, 2.1.275 for the same inside a session
+(`/plugin install sds --marketplace altipard/sleep-docker-sleep`). Older versions need two
+steps:
 
 ```text
 /plugin marketplace add altipard/sleep-docker-sleep
