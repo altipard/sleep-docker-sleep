@@ -1,0 +1,14 @@
+{
+  "name": "sleep-docker-sleep",
+  "owner": { "name": "altipard", "url": "https://github.com/altipard" },
+  "description": "Claude Code plugin for sds (sleep-docker-sleep)",
+  "plugins": [
+    {
+      "name": "sds",
+      "source": "./plugins/sds",
+      "description": "Set up and operate sds: labels, reverse-proxy integration, wake, sleep, hold, diagnosis",
+      "category": "development",
+      "tags": ["docker", "containers", "idle", "compose", "sds"]
+    }
+  ]
+}
