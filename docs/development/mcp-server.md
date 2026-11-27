@@ -8,7 +8,9 @@ Statements marked **assumption** or **unverified** were not checked.
 
 Help from a coding agent for building and operating an `sds` setup: label a stack, connect a
 reverse proxy, wake the stack before tests, see what is running that nobody uses, find out
-why a group did not start, and see which containers `sds` does not manage. `sds` already
+why a group did not start, and see which containers `sds` does not manage (in stage 1 only
+by comparing `docker ps` with `sds status` and suggesting labels; the list with reasons
+needs stage 2, gap B). `sds` already
 knows which groups are idle and can stop and start them; the agent needs to know how to use
 that.
 
@@ -341,11 +343,11 @@ Same bar as `docs/development/production-hardening.tdd.md` (RED then GREEN per b
 
 ### Docs
 
-New handbook chapter `docs/handbook/mcp.md` (+ `SUMMARY.md`), updates to `api.md` and
+Stage 2 extends the handbook chapter `docs/handbook/agents.md` that PR 1 creates (section 7)
+with the MCP server, modes and client config; updates to `api.md` and
 `src/admin/assets/openapi.json` for each new route, `operations.md` (leases),
 `roadmap.md` (remove "hold survives restart" only when done; add the read-only token),
-README mention. `sds mcp --help` documents modes and env vars. The stage-1 chapter for the
-plugin and other agents (section 7) is the base; stage 2 extends it.
+README mention. `sds mcp --help` documents modes and env vars.
 
 ### Client config examples (format **unverified in this session**; check each client's docs)
 
@@ -494,7 +496,10 @@ Commands and flags the skill names, checked against `src/cli/` at `8841c7e`:
 (`cli/init.rs:10-20`); `sds config [--path]` (`cli/mod.rs:75-79`, prints `admin.token` as
 `<redacted>`, `config/file.rs:35,60`); `sds update [--check] [--tag] [--force]`
 (`cli/update.rs:17-27`); `sds service install` (`cli/service.rs:16-22`); `sds --help` and
-`sds --version` (clap, `cli/mod.rs:22`); global `--config`, `--url`, `--token` (`cli/mod.rs:24-26, 65-72`).
+`sds --version` (clap, `cli/mod.rs:22`). Only `--config` is global (`cli/mod.rs:24-26`);
+`--url` and `--token` (`ClientArgs`, `cli/mod.rs:63-72`) exist only on `status`, `wake`,
+`sleep`, `hold`, `release` and `top` (`cli/status.rs:12-58`), so `commands.md` lists them
+per command.
 Group states are `stopped`, `starting`, `running`, `stopping`, `failed`
 (`controller/snapshot.rs:7-14`). `sds hold` has no TTL option (`cli/status.rs:53-58`). A
 failed command prints `error: …` and exits 1 (`src/main.rs:6-9`); `sds wake --wait` after
@@ -510,8 +515,9 @@ description: Sets up and operates sds (sleep-docker-sleep), which stops idle Doc
 
 # sds
 
-Written for sds `<release that ships the plugin>` or later. Works through the `sds` CLI in
-the shell. Check `command -v sds` and `sds --version` first; without the binary, point to the installer in the handbook. Handbook:
+Written for sds `<minimum version, see section 7 Versioning>` or later. Works through the
+`sds` CLI in the shell. Check `command -v sds` and `sds --version` first; without the
+binary, point to the installer in the handbook. Handbook:
 https://altipard.github.io/sleep-docker-sleep/
 
 ## Ground rules
@@ -533,13 +539,19 @@ https://altipard.github.io/sleep-docker-sleep/
    restart sds, run `sds update` or `sds service install` on your own. `sds.toml` changes
    need a restart of sds. Read the effective config with `sds config` (token redacted), not
    by printing `sds.toml`.
-5. **No hold without an end.** A hold has no expiry: the group stays down until
+5. **The proxy snippet contains the admin token.** With `admin.token` set,
+   `sds integrate` writes it in clear text into the snippet. Never print, echo or quote
+   the snippet; redirect the output straight into the proxy config file
+   (`sds integrate nginx shop > /etc/nginx/snippets/sds-shop.conf`), keep that file out of
+   git, and tell the user where it is.
+6. **No hold without an end.** A hold has no expiry: the group stays down until
    `sds release` or a restart of sds. Hold only when the user asks, name the release
    command, and release when the task that needed it is done.
-6. **One named group at a time.** Run `sds status` first; never sleep or hold a group the
+7. **One named group at a time.** Run `sds status` first; never sleep or hold a group the
    user did not name.
-7. **The installed binary is authoritative.** If a command or flag named here is missing
-   from `sds --help`, the binary is older than this guidance: tell the user, suggest
+8. **The installed binary is authoritative.** If a command or flag named here is missing
+   from `sds --help`, the binary is older than this guidance (for example installed with
+   `SDS_VERSION` while this guidance comes from `main`): tell the user, suggest
    `sds update`, do not guess. A newer binary may have commands not described here; read
    their `--help`.
 
@@ -551,9 +563,9 @@ Decision path, details in [references/setup.md](references/setup.md):
    when the group name should not be the compose project; `sds.keep_awake=true` on a
    proxy inside the stack. Containers without compose: the same labels on `docker run`.
    Containers that cannot get labels: `[groups.<name>]` in `sds.toml`.
-2. Wake path: a reverse proxy calls sds via forward-auth; print its snippet with
-   `sds integrate <nginx|caddy|traefik> <group>`. Without a reverse proxy, or for plain
-   TCP: the native proxy (`sds.proxy.*` labels).
+2. Wake path: a reverse proxy calls sds via forward-auth; write its snippet with
+   `sds integrate <nginx|caddy|traefik> <group> > <proxy config file>` (rule 5). Without
+   a reverse proxy, or for plain TCP: the native proxy (`sds.proxy.*` labels).
 3. Verify: `sds check`, then `sds status`.
 
 ## Operating
@@ -563,7 +575,8 @@ Decision path, details in [references/setup.md](references/setup.md):
 | What runs, what sleeps, since when | `sds status` (`--json` for parsing, `--events` for the log) |
 | Start a group before tests | `sds wake <group> --wait`, see rules 2 and 3 |
 | Stop a group now | `sds sleep <group>` (the next request wakes it) |
-| Keep a group down for maintenance | `sds hold <group>`, later `sds release <group>`, see rule 5 |
+| Keep a group down for maintenance | `sds hold <group>`, later `sds release <group>`, see rule 6 |
+| Containers sds does not manage | compare `docker ps` with `sds status`; suggest labels from [references/setup.md](references/setup.md), change nothing (rule 4) |
 | Live view for the user | `sds top` (needs a terminal; the user runs it) |
 | Why does a group not start | `sds status --events`, `sds check` |
 
@@ -576,20 +589,22 @@ From the handbook chapter "Limitations and known behaviour":
 - Fail-open only with nginx: with Caddy or Traefik an unreachable sds means 502/500.
 - Forward-auth counts requests, not connections; long downloads can be cut off.
 - One sds per Docker daemon: two instances on the same daemon fight over the groups.
-- No config reload: `sds.toml` changes need a restart; label changes apply when the
-  container is recreated.
-- Unknown group names in a proxy snippet are let through with a warning.
+- No config reload: `sds.toml` changes need a restart; label changes take effect
+  immediately.
+- Unknown group names in a proxy snippet are let through with a warning by default; with
+  `admin.unknown_group = "deny"` they are refused with an "unknown service" page.
 ````
 
 Rules derived from this proposal: 1 from section 4 (untrusted text), 2 from use case 2,
-3 from use case 1 and gap D, 5 from use case 3 and gap A, 7 is the stage-1 form of "the
-server tool list is authoritative". The rules are advice; nothing enforces them in stage 1.
+3 from use case 1 and gap D, 5 from `src/integrate/mod.rs:61,136,173` (token in the
+snippet) and section 4 token handling, 6 from use case 3 and gap A, 8 is the stage-1 form
+of "the server tool list is authoritative". The rules are advice; nothing enforces them in stage 1.
 That gap is the main argument for stage 2.
 
 Handbook URL slugs (`labels.html` etc. under the mdbook site) are **unverified**; the skill
-links the site root and names chapters. "Label changes apply when the container is
-recreated" refines `limitations.md:20-23` ("take effect immediately") and is an
-**assumption** from how Docker labels work.
+links the site root and names chapters. The label sentence follows `limitations.md:22-23`;
+the unknown-group sentence follows `reverse-proxy.md:28-30` and the default
+`unknown_group: Allow` (`config/file.rs:51`).
 
 Stage 2 adds a part to the skill that applies only when `sds_*` tools are present: the
 server's tool list is authoritative over the skill text; `sds_wake` result `starting`
@@ -601,20 +616,37 @@ takes a TTL.
 
 Optional step at the end of `main()` in the existing `install.sh`, after the binary is
 installed and the PATH hint is printed, before "To update later". It keeps the script's
-guarantees: strict POSIX sh, passes `shellcheck -s sh` (`.github/workflows/ci.yml:125`),
-runs inside `main()` called on the last line, and the signature or SHA256SUMS check is
-untouched and runs before it.
+conventions: strict POSIX sh, passes `shellcheck -s sh` (`.github/workflows/ci.yml:125`),
+runs inside `main()` called on the last line. The signature or SHA256SUMS check is
+untouched and runs before it, but it covers **only the binary**: the plugin, instructions
+for an agent with a shell, comes from `main` through Claude Code without any Ed25519 or
+SHA256 check (risk 12).
 
 - Runs only if all hold: `claude` on `PATH`; a terminal, probed in a subshell with
   `(: </dev/tty) 2>/dev/null` as sevdesk-mcp does (under `curl | sh` stdin is the script);
   `CI` unset; `SDS_NO_CLAUDE` unset; not root (as root the plugin would land in root's
   `~/.claude`, so print the command instead).
-- Asks on the terminal: `Set up the Claude Code plugin (sds skill)? [y/N]`, read from
-  `/dev/tty`, default no.
+- Asks on the terminal, default no:
+
+  ```text
+  Set up the Claude Code plugin? This adds the marketplace altipard/sleep-docker-sleep
+  from GitHub and installs the plugin "sds" into ~/.claude (user scope). The plugin is
+  not signature-checked like the sds binary. [y/N]
+  ```
+
+  Read with `read -r answer </dev/tty || answer=n`: under `set -eu` a failed or empty read
+  (EOF, closed terminal) would otherwise end the script after a successful install.
+  Whether `claude plugin install` defaults to user scope is **unverified**; if not, the
+  step passes the scope explicitly.
+- When `SDS_VERSION` pins an older release (`install.sh:268-270`), the prompt adds that the
+  plugin follows `main` and may name commands this binary lacks (rule 8).
 - On yes runs `claude plugin install sds --marketplace altipard/sleep-docker-sleep` with
   stdin from `/dev/tty`, as sevdesk-mcp's `run_setup` does (under `curl | sh` stdin is the
-  pipe); whether this shell form prompts at all is **unverified**. Its exit status never
-  fails the installation; on failure (for example a Claude Code older
+  pipe); whether this shell form prompts at all is **unverified**. Ctrl-C belongs to
+  `claude` during the call: `trap ':' INT` before it and `trap 'exit 130' INT` after it,
+  as sevdesk-mcp does (`install.sh:432-445`), so an interrupted plugin install (exit 130)
+  returns to the installer instead of killing it. Its exit status never fails the
+  installation; on failure (for example a Claude Code older
   than v2.1.292) it prints the in-session commands from above.
 - Otherwise, if `claude` is on `PATH`, one line with the install command. Without `claude`
   nothing is printed.
@@ -630,7 +662,8 @@ sevdesk-mcp has a guided setup (`sevdesk-mcp setup`, `src/setup/`) built on the 
 config and copies the skill into the agents' skill directories; the installer hands over
 to it on a terminal. For sds:
 
-- **Now:** a handbook chapter with config snippets for Cursor, VS Code and Claude Desktop
+- **Now:** the handbook chapter `docs/handbook/agents.md` with config snippets for Cursor,
+  VS Code and Claude Desktop
   (section 6, client config) and, for agents that read skills from a directory, how to
   copy `plugins/sds/skills/sds` there. Stage 1 needs only the skill copy; stage 2 adds the
   MCP snippet.
@@ -648,32 +681,42 @@ to it on a terminal. For sds:
 
 - Plugin, guidance and binary live in one repo, so one commit changes CLI or tools and the
   guidance together.
-- `SKILL.md` states the minimum sds version it is written for (the release that ships the
-  plugin). Older binary: rule 7, missing commands are reported and `sds update` is
+- `SKILL.md` states the minimum sds version it is written for. The release that carries a
+  change is not known at merge time: versions come from git tags (`.cz.toml`,
+  `version_provider = "scm"`; `release.yml:42` computes the next one with
+  `cz bump --get-next`). Rule: the minimum is the oldest **released** version that has every
+  command the guidance names. PR 1 names only existing commands, so it uses the latest
+  release at merge time. A PR that adds a command the guidance needs (PR 4: `sds hold
+  --ttl`) raises the minimum in a follow-up commit after its release tag; until then rule
+  8 (`--help` check) covers the gap. A release-job step that rewrites the file was rejected:
+  it would have to push to `main` from the release workflow.
+- Mismatch by design: `install.sh` with `SDS_VERSION=<old>` installs an old binary while
+  the plugin always comes from `main` (rule 8 and the installer prompt say so).
+- Older binary: rule 8, missing commands are reported and `sds update` is
   suggested, not run. Newer binary: unknown commands are read from `--help`, never guessed.
 - Stage 2: the server's `tools/list` is authoritative. A tool described but missing means
   an older binary or a mode without it; an extra tool means a newer binary. The daemon may
   be older than the binary after `sds update` (section 6); the adapter reports that.
 - The plugin has no `version` field at first (as sevdesk-mcp); if updates turn out not to
-  reach users, the release job sets it to the release version. **Unverified** how Claude
+  reach users, the same follow-up commit after a release tag sets it. **Unverified** how Claude
   Code decides that a plugin changed.
 
 ## 8. Implementation plan
 
 Conventional Commits; `feat` releases a minor version, so PRs 1 to 7 are separate
-release-worthy steps; PR 8 (`docs`) does not release. PR 1 is stage 1; PRs 2 to 8 are stage 2 and start only if open
-question 11 says so.
+release-worthy steps; PR 8 (`docs`) does not release. PR 1 is stage 1; PRs 2 to 8 are
+stage 2 and start only if open question 11 says so.
 
 | PR | Content | Effort |
 |---|---|---|
-| 1 `feat(plugin): claude code plugin with sds agent guidance` | `.claude-plugin/marketplace.json`, `plugins/sds` with stage-1 `plugin.json`, `SKILL.md` and `references/` (section 7), every named command checked against `src/cli/`; optional Claude Code step in `install.sh` (shellcheck); handbook chapter for the plugin and for copying the guidance to other agents | 1.5 d |
+| 1 `feat(plugin): claude code plugin with sds agent guidance` | `.claude-plugin/marketplace.json`, `plugins/sds` with stage-1 `plugin.json`, `SKILL.md` and `references/` (section 7), every named command checked against `src/cli/`; optional Claude Code step in `install.sh` (shellcheck); new handbook chapter `docs/handbook/agents.md` (+ `SUMMARY.md`) for the plugin and for copying the guidance to other agents | 1.5 d |
 | 2 `feat(mcp): read-only stdio server` | `mcp` feature and rmcp dependency, `sds mcp`, `sds_status`, `sds_group`, `sds_diagnose`, sanitizer, stderr audit log, path encoding and group validation (gap E), tests, 1.88 and audit check; plugin gains `mcpServers` and `userConfig` (mode `read`), guidance gains the tool part | 2.5 d |
 | 3 `feat(mcp): operate mode` | `--mode operate`, `sds_wake` with polling wait, `sds_sleep`, `--groups`, rate limit, `X-SDS-Client` header; `operate` option in the plugin | 1.5 d |
-| 4 `feat(admin): hold ttl and owner` | gap A: registry map, expiry tick, snapshot fields, `sds hold --ttl`, openapi, docs, tests; guidance rule 5 names `--ttl` | 2 d |
+| 4 `feat(admin): hold ttl and owner` | gap A: registry map, expiry tick, snapshot fields, `sds hold --ttl`, openapi, docs, tests; guidance rule 6 names `--ttl` | 2 d |
 | 5 `feat(mcp): hold and release tools` | TTL mandatory, old-daemon fallback, release on exit | 1 d |
 | 6 `feat(admin): list unmanaged containers` | gap B: `Discovery.unmanaged` with reasons, `GET /api/v1/containers`, hoist label list; `sds_unmanaged`, `sds_suggest_labels` | 2 d |
 | 7 `feat(admin): keep-awake lease` | gap C, `sds_keep_awake`, restart-persistence follow-up stays on the roadmap | 1.5 d |
-| 8 `docs(mcp): handbook, resources, prompts` | chapter, client configs, optional resources and prompts | 1 d |
+| 8 `docs(mcp): handbook, resources, prompts` | extend `docs/handbook/agents.md` with the MCP server and client configs, optional resources and prompts | 1 d |
 
 About 13 working days: 1.5 for stage 1, 11.5 for stage 2. PR 1 needs no daemon or binary
 change and delivers value on its own; PR 2 is the first with code and carries no write
@@ -681,9 +724,9 @@ risk.
 
 Why `feat` for PR 1 and not `docs` or `chore`: the plugin and the installer step are new,
 user-facing behaviour. Only `feat`/`fix` produce a release and a CHANGELOG entry, and the
-guidance names the minimum sds version it fits, which should be the release that announces
-it. The binary of that release is unchanged; the plugin and `install.sh` are read from
-`main` and go live with the merge, not with the release artifacts (**assumption** for the
+guidance names a minimum sds version (section 7, Versioning). The binary of the release
+is unchanged; the plugin and `install.sh` are read from `main` and go live with the merge,
+not with the release artifacts (**assumption** for the
 marketplace, see section 7). Scope `plugin` rather than `skill`: the PR adds the plugin
 container that stage 2 extends.
 
@@ -703,20 +746,32 @@ container that stage 2 extends.
 6. **Data egress** of container names to the model provider.
 7. Two instances on one daemon fight over groups (`limitations.md`); an agent waking
    groups is one more actor. Not new, but more visible.
-8. **Stage-1 rules are advice only.** The agent has the user's shell and Docker access;
+8. **Admin token in the model context.** `sds integrate` prints `admin.token` in clear
+   text into the snippet (`src/integrate/mod.rs:61,136,173`, `cli/integrate.rs:44`); an
+   agent that shows it puts the token into the transcript and the provider's logs. Skill
+   rule 5 (redirect to the file, never print, never commit). A real fix is a
+   `--token-file`/placeholder option in `sds integrate` (not planned yet).
+9. **Stage-1 rules are advice only.** The agent has the user's shell and Docker access;
    read-only, exact-name writes and hold limits are not enforced until stage 2.
-9. **Guidance drifts from the CLI.** Mitigated by one repo and the check of every named
+10. **Guidance drifts from the CLI.** Mitigated by one repo and the check of every named
    command in PR 1; a test that runs each command in `references/commands.md` with
    `--help` would make it mechanical (not planned yet).
-10. **Installer prompt** in a `curl | sh` flow: wrong for root and CI, hence the conditions
+11. **Installer prompt** in a `curl | sh` flow: wrong for root and CI, hence the conditions
     in section 7.
+12. **Unsigned plugin.** The binary is checked against the pinned Ed25519 key or
+    SHA256SUMS; the plugin, instructions for an agent with a shell, comes from `main`
+    through Claude Code without any check, so a compromised `main` reaches users without a
+    release. Mitigations: branch protection on `main`, the prompt states it, and pinning
+    the marketplace or plugin to a release tag (**unverified** whether Claude Code
+    supports a ref for GitHub marketplaces).
 
 ### Open questions (recommended answer first)
 
 1. Read-only by default, writes via `--mode operate`? **Yes.**
 2. No hold tool until daemon-side TTL exists? **Yes**, hold/release come with PR 4 and 5.
 3. Do you run tests against published ports (invisible to `sds`)? If yes, keep-awake
-   lease is a v1 must; **recommend yes, PR 7 right after hold TTL.**
+   lease is a v1 must; **recommend yes**, as PR 7 after hold TTL (PR 4); move it ahead of
+   PR 5 and 6 if tests against published ports are the common case.
 4. Ever expose container logs? **No.** Highest injection and secret risk; the agent has its
    own shell for `docker logs`.
 5. Ship `rmcp` in the default binary behind a `mcp` feature, default on? **Yes.**
@@ -728,7 +783,7 @@ container that stage 2 extends.
 10. Is it acceptable that `sds_unmanaged` sends names of all host containers to the model?
     **Only on explicit use; consider an opt-in flag for it.**
 11. Is stage 2 needed at all once the guidance exists? **Decide after real use of the
-    skill**: needed if agents without a shell matter, or if advised limits (rules 4 to 6)
+    skill**: needed if agents without a shell matter, or if advised limits (rules 4 to 7)
     turn out to be ignored.
 12. Plugin in the sds repo or a separate repo? **sds repo**: guidance, CLI and later the
     tool list change in one commit; one install command names the repo users already know.
