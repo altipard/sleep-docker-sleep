@@ -90,9 +90,10 @@ As soon as `admin.bind` is not loopback, `admin.token` is required, and **the sn
 contains the token in clear text** (ground rule 5). Steps:
 
 1. Find the config the daemon uses (`sds config --path` shows the CLI's choice; a service
-   unit names it with `--config`). `sds integrate` silently falls back to built-in
-   defaults, without token and with the default `admin.bind`, when it cannot read that
-   file, even with `-c`. So always pass it explicitly. The examples use
+   unit names it with `--config`). Binaries before the fix release (fixed from
+   the next release on) silently fall back to built-in defaults in `sds integrate`,
+   without token and with the default `admin.bind`, when they cannot read that file, even
+   with `-c`; newer ones exit non-zero instead. So always pass it explicitly. The examples use
    `cfg=/etc/sds/sds.toml`.
 2. Preview with every token line hidden:
 
@@ -110,8 +111,8 @@ contains the token in clear text** (ground rule 5). Steps:
    the snippet with the config: `sds config` shows a set token as `token = "<redacted>"`,
    and then the snippet must contain it. Without `admin.token` (loopback `admin.bind`, the
    usual host nginx setup) a snippet without token is expected. `sds config` also exits 1
-   on an unreadable config, so it catches what `sds integrate` would silently replace
-   with defaults.
+   on an unreadable config, so it catches what older `sds integrate` binaries
+   would silently replace with defaults.
 
    ```bash
    cfg=/etc/sds/sds.toml                    # the config the daemon runs with

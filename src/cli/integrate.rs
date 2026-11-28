@@ -27,7 +27,11 @@ pub struct IntegrateArgs {
 }
 
 pub fn integrate(explicit: Option<&Path>, args: IntegrateArgs) -> Result<()> {
-    let cfg = config::load(explicit).map(|(c, _)| c).unwrap_or_default();
+    let (cfg, source) = config::load(explicit)?;
+    if matches!(source, config::ConfigSource::BuiltIn) {
+        // stderr only: stdout is the snippet and gets redirected into proxy config files
+        eprintln!("note: no sds.toml found, rendering with built-in defaults (no admin.token, default admin.bind)");
+    }
     let sds_url = args.sds_url.unwrap_or_else(|| super::client::admin_url(cfg.admin.bind));
     let hold = args.hold_timeout.unwrap_or_else(|| {
         cfg.groups

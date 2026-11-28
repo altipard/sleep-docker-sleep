@@ -552,9 +552,9 @@ https://altipard.github.io/sleep-docker-sleep/
    - Write the file only with the recipe in `references/setup.md` (Wake path, step 3); do
      not improvise one. The skill is the single source for the script; this design only
      states what it must do:
-     - Pass the daemon's config explicitly (`sds -c "$cfg"`). `sds integrate` silently uses
-       built-in defaults (no token, default `admin.bind`) when it cannot read the config,
-       even with `-c` (known gap, risk 13); `sds -c "$cfg" config` exits 1 instead, so the
+     - Pass the daemon's config explicitly (`sds -c "$cfg"`). Binaries before the fix release (fixed from the
+       next release on) make `sds integrate` silently use built-in defaults (no token,
+       default `admin.bind`) when it cannot read the config, even with `-c` (risk 13); `sds -c "$cfg" config` exits 1 instead, so the
        recipe runs it first and stops on failure.
      - The token guard is conditional: if that `config` output shows
        `token = "<redacted>"`, `grep -c X-SDS-Token` on the snippet must be greater than 0;
@@ -803,13 +803,13 @@ container that stage 2 extends.
     repo, only in the GitHub settings), the prompt states it, and pinning
     the marketplace or plugin to a release tag (**unverified** whether Claude Code
     supports a ref for GitHub marketplaces).
-13. **`sds integrate` silently falls back to defaults.** When it cannot read the config,
-    even one passed with `-c`, it renders the snippet with built-in defaults
+13. **`sds integrate` silently falls back to defaults (fixed from the next release on).**
+    Older binaries, when they cannot read the config, even one passed with `-c`, render the snippet with built-in defaults
     (`src/cli/integrate.rs:29`, `config::load(...).unwrap_or_default()`): no token,
     default `admin.bind` and `hold_timeout`, exit 0. The proxy then fails auth or points
-    to the wrong address. The skill recipe catches it by running `sds config` first.
-    Follow-up: `fix(integrate): fail on an unreadable config` (error for an explicit
-    `-c`/`SDS_CONFIG`, as `sds config` does).
+    to the wrong address. The skill recipe catches it by running `sds config` first and keeps that guard, because
+    older binaries still behave this way. Fixed by `fix(integrate)`: an unusable config is
+    now an error; only a missing config everywhere renders defaults, with a note on stderr.
 
 ### Open questions (recommended answer first)
 

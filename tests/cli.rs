@@ -99,3 +99,77 @@ fn top_demo_needs_a_terminal_and_no_daemon() {
         .failure()
         .stderr(predicate::str::contains("needs a terminal"));
 }
+
+fn integrate_cmd() -> Command {
+    let mut cmd = sds();
+    cmd.args(["integrate", "nginx", "shop", "--host", "shop.example.com"]);
+    cmd
+}
+
+#[test]
+fn integrate_fails_on_missing_explicit_config() {
+    let mut cmd = sds();
+    cmd.args(["-c", "/nonexistent/sds.toml", "integrate", "nginx", "shop"]);
+    cmd.assert().failure().stdout("").stderr(predicate::str::contains("/nonexistent/sds.toml"));
+}
+
+#[test]
+fn integrate_fails_on_invalid_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sds.toml");
+    std::fs::write(&path, "this is = not [valid toml").unwrap();
+    let mut cmd = sds();
+    cmd.arg("-c").arg(&path).args(["integrate", "nginx", "shop"]);
+    cmd.assert().failure().stdout("").stderr(predicate::str::contains("sds.toml"));
+}
+
+#[cfg(unix)]
+#[test]
+fn integrate_fails_on_unreadable_config() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sds.toml");
+    std::fs::write(&path, "[admin]\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_to_string(&path).is_ok() {
+        // running as root: mode 0 does not block reads
+        return;
+    }
+    let mut cmd = sds();
+    cmd.arg("-c").arg(&path).args(["integrate", "nginx", "shop"]);
+    cmd.assert().failure().stdout("").stderr(predicate::str::contains("sds.toml"));
+}
+
+#[test]
+fn integrate_emits_token_from_valid_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sds.toml");
+    std::fs::write(&path, "[admin]\nbind = \"127.0.0.1:9911\"\ntoken = \"s3cret-token\"\n").unwrap();
+    let mut cmd = sds();
+    cmd.arg("-c").arg(&path).args(["integrate", "nginx", "shop"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("X-SDS-Token"))
+        .stdout(predicate::str::contains("s3cret-token"))
+        .stdout(predicate::str::contains("127.0.0.1:9911"))
+        .stderr("");
+}
+
+#[test]
+fn integrate_without_any_config_notes_defaults_on_stderr() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let out = integrate_cmd()
+        .current_dir(cwd.path())
+        .env_remove("SDS_CONFIG")
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join("xdg"))
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("built-in defaults"))
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("/_sds/check/shop"));
+    assert!(!stdout.contains("note:"));
+}
