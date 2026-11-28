@@ -1,12 +1,16 @@
-# Ten tiny web servers, each its own sds group with a short idle timeout, so the
-# dashboard shows groups waking and sleeping within a minute instead of hours.
+# Eleven sds groups with short idle timeouts, so the dashboard shows groups waking and
+# sleeping within a minute instead of hours. They show the three ways sds sees traffic:
+#
+#   native HTTP proxy  api web shop blog mail chat cdn   sds proxy 1820x -> loopback port 1810x
+#   forward-auth       docs wiki metrics                  Caddy 1830x -> /_sds/check/<group>
+#   native TCP proxy   cache (Redis)                      sds proxy 18211 -> loopback port 18111
 #
 #   docker compose up -d        # start (or `up` to watch the container logs)
-#   sds run                     # on the host; discovers the ten groups via labels
-#   ./traffic.sh                # random requests through the sds proxies, Ctrl-C to stop
+#   sds run -c sds.toml         # on the host; discovers the groups via labels
+#   ./traffic.sh                # random requests through sds and Caddy, Ctrl-C to stop
 #
-# Each service publishes its port on loopback (1810x) and gets a native sds proxy in
-# front (1820x). Requests must go through the proxy port, otherwise sds sees no activity.
+# Requests must go through the sds proxy ports or Caddy, otherwise sds sees no activity.
+# All ports are published on 127.0.0.1 only.
 services:
   api:  # busy service, rarely sleeps
     image: traefik/whoami:v1.11
@@ -65,48 +69,36 @@ services:
       sds.proxy.upstream: "127.0.0.1:18104"
       sds.proxy.mode: "http"
 
-  docs:
+  docs:  # behind Caddy (forward-auth), no published port
     image: traefik/whoami:v1.11
     command: ["--name", "docs"]
-    ports: ["127.0.0.1:18105:80"]
     labels:
       sds.enable: "true"
       sds.group: "docs"
       sds.idle_timeout: "40s"
       sds.start_grace: "1s"
-      sds.health: "http://127.0.0.1:18105/"
-      sds.proxy.listen: "127.0.0.1:18205"
-      sds.proxy.upstream: "127.0.0.1:18105"
-      sds.proxy.mode: "http"
+      sds.health: "grace"  # no host port; Caddy reaches it on the compose network
 
-  wiki:
+  wiki:  # behind Caddy (forward-auth), waiting page served through Caddy
     image: traefik/whoami:v1.11
     command: ["--name", "wiki"]
-    ports: ["127.0.0.1:18106:80"]
     labels:
       sds.enable: "true"
       sds.group: "wiki"
       sds.idle_timeout: "25s"
       sds.wake: "page"
       sds.start_grace: "1s"
-      sds.health: "http://127.0.0.1:18106/"
-      sds.proxy.listen: "127.0.0.1:18206"
-      sds.proxy.upstream: "127.0.0.1:18106"
-      sds.proxy.mode: "http"
+      sds.health: "grace"  # no host port; Caddy reaches it on the compose network
 
-  metrics:
+  metrics:  # behind Caddy (forward-auth), no published port
     image: traefik/whoami:v1.11
     command: ["--name", "metrics"]
-    ports: ["127.0.0.1:18107:80"]
     labels:
       sds.enable: "true"
       sds.group: "metrics"
       sds.idle_timeout: "60s"
       sds.start_grace: "1s"
-      sds.health: "http://127.0.0.1:18107/"
-      sds.proxy.listen: "127.0.0.1:18207"
-      sds.proxy.upstream: "127.0.0.1:18107"
-      sds.proxy.mode: "http"
+      sds.health: "grace"  # no host port; Caddy reaches it on the compose network
 
   mail:
     image: traefik/whoami:v1.11
@@ -149,3 +141,37 @@ services:
       sds.proxy.listen: "127.0.0.1:18210"
       sds.proxy.upstream: "127.0.0.1:18110"
       sds.proxy.mode: "http"
+
+  cache:  # Redis behind the native TCP proxy; a PING through 18211 wakes it
+    image: redis:7.4.1-alpine
+    ports: ["127.0.0.1:18111:6379"]
+    # A HEALTHCHECK instead of sds.health=tcp://127.0.0.1:18111: Docker's port forwarder
+    # (Docker Desktop, userland proxy) accepts on 18111 before Redis listens, so a TCP probe
+    # would report ready too early and the first client would be disconnected.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 1s
+      retries: 5
+    labels:
+      sds.enable: "true"
+      sds.group: "cache"
+      sds.idle_timeout: "30s"
+      sds.health: "docker"
+      sds.proxy.listen: "127.0.0.1:18211"
+      sds.proxy.upstream: "127.0.0.1:18111"
+      sds.proxy.mode: "tcp"
+
+  caddy:  # forward-auth proxy for docs, wiki and metrics; asks sds on the host
+    image: caddy:2.8.4-alpine
+    ports:
+      - "127.0.0.1:18305:8080"  # docs
+      - "127.0.0.1:18306:8081"  # wiki
+      - "127.0.0.1:18307:8082"  # metrics
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    # Docker Desktop resolves host.docker.internal on its own; on Linux this entry maps it
+    # to the docker0 address, where `sds run --bind 172.17.0.1:19900` listens.
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    labels:
+      sds.keep_awake: "true"

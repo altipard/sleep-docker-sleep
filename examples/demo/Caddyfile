@@ -1,0 +1,66 @@
+# Generated with sds integrate caddy (see README.md), one site per group. Caddy listens
+# on 8080-8082 inside its container; compose.yaml publishes them on 127.0.0.1:18305-18307.
+
+# sleep-docker-sleep: forward-auth integration for group "docs"
+# Caddy's forward_auth lets a non-2xx answer from sds through to the client unchanged, so
+# the waiting page (503 + Refresh) is served directly. Note: Caddy has no clean fail-open
+# for forward_auth; if sds is unreachable the client sees a 502. Run sds as a supervised
+# service (systemd/launchd); a restart takes well under a second.
+
+:8080 {
+    forward_auth host.docker.internal:19900 {
+        uri /_sds/check/docs
+        copy_headers X-SDS-State
+        header_up X-SDS-Token "demo-only-not-a-secret"
+        # must exceed the group's hold_timeout when wake = hold
+        transport http {
+            response_header_timeout 65s
+            dial_timeout 2s
+        }
+    }
+
+    reverse_proxy http://docs:80
+}
+
+# sleep-docker-sleep: forward-auth integration for group "wiki"
+# Caddy's forward_auth lets a non-2xx answer from sds through to the client unchanged, so
+# the waiting page (503 + Refresh) is served directly. Note: Caddy has no clean fail-open
+# for forward_auth; if sds is unreachable the client sees a 502. Run sds as a supervised
+# service (systemd/launchd); a restart takes well under a second.
+
+:8081 {
+    forward_auth host.docker.internal:19900 {
+        uri /_sds/check/wiki
+        copy_headers X-SDS-State
+        header_up X-SDS-Token "demo-only-not-a-secret"
+        # must exceed the group's hold_timeout when wake = hold
+        transport http {
+            response_header_timeout 65s
+            dial_timeout 2s
+        }
+    }
+
+    reverse_proxy http://wiki:80
+}
+
+# sleep-docker-sleep: forward-auth integration for group "metrics"
+# Caddy's forward_auth lets a non-2xx answer from sds through to the client unchanged, so
+# the waiting page (503 + Refresh) is served directly. Note: Caddy has no clean fail-open
+# for forward_auth; if sds is unreachable the client sees a 502. Run sds as a supervised
+# service (systemd/launchd); a restart takes well under a second.
+
+:8082 {
+    forward_auth host.docker.internal:19900 {
+        uri /_sds/check/metrics
+        copy_headers X-SDS-State
+        header_up X-SDS-Token "demo-only-not-a-secret"
+        # must exceed the group's hold_timeout when wake = hold
+        transport http {
+            response_header_timeout 65s
+            dial_timeout 2s
+        }
+    }
+
+    reverse_proxy http://metrics:80
+}
+

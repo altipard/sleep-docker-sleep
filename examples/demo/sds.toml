@@ -1,0 +1,12 @@
+# Demo-only daemon config, passed with `sds run -c sds.toml`; your own sds.toml stays untouched.
+#
+# The admin API stays on loopback. Docker Desktop (macOS, Windows) forwards
+# host.docker.internal from containers to the host's 127.0.0.1, so the Caddy container
+# reaches it there. On Linux host.docker.internal is the docker0 address; start with
+# `--bind 172.17.0.1:19900` instead (see README.md).
+#
+# The token is a public placeholder so the same Caddyfile works on both platforms. It is
+# not a secret: change it (here and in the Caddyfile) before reusing these files anywhere.
+[admin]
+bind = "127.0.0.1:19900"   # 19900, not 9900, so the demo does not collide with your own daemon
+token = "demo-only-not-a-secret"

@@ -243,15 +243,17 @@ in [Limitations](docs/handbook/limitations.md).
 
 ## Try it with the demo stack
 
-[`examples/demo`](examples/demo/README.md) starts ten tiny web servers with idle timeouts
-between 20 and 60 seconds and a script that sends random requests through `sds`. Within a
-minute the dashboard shows groups falling asleep, waking on a request and serving again.
+[`examples/demo`](examples/demo/README.md) starts eleven groups with idle timeouts between
+20 and 60 seconds behind all three ways `sds` sees traffic: the native HTTP proxy,
+forward-auth through Caddy and the native TCP proxy in front of Redis. A script sends
+random requests; within a minute the dashboard shows groups falling asleep, waking on a
+request and serving again.
 
 ```bash
 cd examples/demo
 docker compose up -d
-sds run          # second terminal
-./traffic.sh     # third terminal
+sds run -c sds.toml   # second terminal; demo config, admin API on 127.0.0.1:19900
+./traffic.sh          # third terminal
 ```
 
 ## How it compares
