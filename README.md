@@ -33,6 +33,10 @@ curl -fsSL https://raw.githubusercontent.com/altipard/sleep-docker-sleep/main/in
 The installer verifies the release and installs to `/usr/local/bin`, or to `~/.local/bin` if
 that is not writable. Look around first, without Docker or a daemon: `sds top --demo`.
 
+Coding agent: `claude plugin install sds --marketplace altipard/sleep-docker-sleep` adds a
+Claude Code plugin with guidance for setting up and operating sds through its CLI (see the
+handbook chapter "Coding agents").
+
 <details>
 <summary>specific version, verification, by hand, cargo or container</summary>
 
