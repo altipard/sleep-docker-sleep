@@ -30,7 +30,7 @@ redis_ping() {
   start=$(date +%s)
   if { exec 3<>"/dev/tcp/127.0.0.1/${port}"; } 2>/dev/null; then
     printf 'PING\r\n' >&3
-    IFS= read -r -t 120 reply <&3 || reply=""
+    IFS= read -r -t 120 reply <&3 2>/dev/null || reply=""
     exec 3<&- 3>&-
   fi
   reply=${reply:-}

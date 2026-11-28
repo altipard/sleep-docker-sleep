@@ -68,11 +68,18 @@ with a real secret.
 
   ```bash
   sds run -c sds.toml --bind 172.17.0.1:19900
-  sds -c sds.toml status --url http://172.17.0.1:19900
+  export SDS_URL=http://172.17.0.1:19900   # or --url on each command
+  sds -c sds.toml status
   ```
 
-  `docker0` only exists while Docker is running, so start Docker before `sds`. `sds`
-  allows the non-loopback bind because a token is set. Check the bridge address with
+  All client commands (`status`, `wake`, `sleep`, `hold`, `release`, `top`) derive the
+  daemon address from `admin.bind` in `sds.toml`, which still says loopback, so they need
+  `SDS_URL` or `--url` on Linux. `docker0` only exists while Docker is running, so start
+  Docker before `sds`. `sds` allows the non-loopback bind because a token is set.
+  On this bind every container on the host can reach the admin API, and the token is
+  public, so run the demo only on a machine whose containers you trust. A host firewall
+  (ufw, firewalld) may block containers from reaching `172.17.0.1:19900`; if Caddy
+  answers `502` while `sds` runs, allow that port from the Docker bridge. Check the bridge address with
   `ip -4 addr show docker0` if it differs.
 
 ## TCP proxy and Redis
