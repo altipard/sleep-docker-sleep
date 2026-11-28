@@ -1,25 +1,90 @@
-# Demo: ten services, short timeouts, random traffic
+# Demo: three ways sds sees traffic, short timeouts, random traffic
 
-A playground to watch `sds` work: ten tiny [whoami](https://github.com/traefik/whoami)
-web servers, each its own group with an idle timeout between 20 and 60 seconds, and a
-script that sends random requests. Within a minute the dashboard shows groups going to
-sleep, waking up on a request and serving again.
+A playground to watch `sds` work: eleven groups with idle timeouts between 20 and 60
+seconds and a script that sends random requests. Within a minute the dashboard shows
+groups going to sleep, waking up on a request and serving again. The groups cover the
+three ways `sds` sees traffic:
+
+| Groups | How `sds` sees the request | Ports on 127.0.0.1 |
+|---|---|---|
+| `api` `web` `shop` `blog` `mail` `chat` `cdn` | native HTTP proxy (`sds.proxy.mode=http`) in front of a [whoami](https://github.com/traefik/whoami) server | proxy 1820x, app 1810x |
+| `docs` `wiki` `metrics` | forward-auth: a Caddy container asks `sds` via `/_sds/check/<group>` before every request, the production setup | Caddy 18305-18307 |
+| `cache` | native TCP proxy (`sds.proxy.mode=tcp`) in front of Redis | proxy 18211, Redis 18111 |
 
 ```bash
 cd examples/demo
-docker compose up -d        # ten containers, ports 18101-18110 on loopback
-sds run                     # in a second terminal: dashboard with the ten groups
+docker compose up -d        # eleven services plus Caddy, all ports on loopback
+sds run -c sds.toml         # in a second terminal: dashboard with the eleven groups
 ./traffic.sh                # in a third terminal: random requests, Ctrl-C to stop
 ```
 
-`sds run` discovers the groups from the labels; a daemon that is already running picks
-them up on its next discovery pass. The traffic goes through the native sds proxies on
-ports 18201-18210, so `sds` sees every request. Services that appear several times in
-the pool of `traffic.sh` (`api`, `web`) rarely sleep; `cdn` is hit so rarely that it is
-asleep most of the time. `blog` and `wiki` use `sds.wake=page`, so the first request
-after a nap gets the waiting page (HTTP 503) instead of being held.
+`sds run -c sds.toml` uses the demo config next to this file and leaves your own
+`sds.toml` alone. It puts the admin API on `127.0.0.1:19900` instead of `9900`, so it
+does not collide with a daemon you already run; query it with `sds -c sds.toml status`.
+Add `--headless` to log to stderr instead of showing the dashboard.
 
-A wake takes about a second here: `whoami` starts instantly and `sds.start_grace` is
-1 s. Real applications take longer; raise `sds.start_timeout` accordingly.
+`traffic.sh` sends HTTP requests through the sds proxy ports and through Caddy, and a
+Redis `PING` through the TCP proxy using bash's `/dev/tcp`, so it needs only bash and
+curl. Services that appear several times in its pool (`api`, `web`) rarely sleep; `cdn`
+is hit so rarely that it is asleep most of the time. `blog` and `wiki` use
+`sds.wake=page`: the first request after a nap gets the waiting page (HTTP 503) instead
+of being held, for `wiki` served through Caddy. The other groups hold the request until
+the container is ready; a `PING` to a sleeping Redis returns `PONG` after the wake.
 
-Clean up with `docker compose down`.
+## Forward-auth through Caddy
+
+[`Caddyfile`](Caddyfile) holds three sites generated with `sds integrate caddy`, one per
+group, for example:
+
+```bash
+sds -c sds.toml integrate caddy docs --host :8080 --upstream http://docs:80 \
+    --sds-url http://host.docker.internal:19900
+```
+
+Caddy runs in the compose stack and reaches the daemon on the host as
+`host.docker.internal:19900`. `docs`, `wiki` and `metrics` publish no port of their own,
+so Caddy is the only way in; they use `sds.health=grace` because `sds` cannot probe them
+from the host.
+
+**Caddy fails closed.** As long as `sds` is not running, Caddy answers `502` for these
+three groups (the native proxy ports are not open either). Start the stack and `sds` in
+either order; Caddy needs no restart once `sds` is up. See
+[Reverse proxy integration](../../docs/handbook/reverse-proxy.md#caddy).
+
+### The demo token
+
+`sds.toml` sets `admin.token = "demo-only-not-a-secret"` and the Caddyfile sends it as
+`X-SDS-Token`. It is a public placeholder for this demo only, so the same files work on
+macOS and Linux. If you reuse these files for anything else, replace it in both files
+with a real secret.
+
+### macOS (Docker Desktop) and Linux
+
+- **Docker Desktop** forwards `host.docker.internal` from containers to the Mac's
+  `127.0.0.1`, so the admin API stays on loopback: `sds run -c sds.toml`.
+- **Linux**: `host.docker.internal` comes from `extra_hosts: host-gateway` in
+  `compose.yaml` and points at the `docker0` bridge (`172.17.0.1` by default), so `sds`
+  has to listen there:
+
+  ```bash
+  sds run -c sds.toml --bind 172.17.0.1:19900
+  sds -c sds.toml status --url http://172.17.0.1:19900
+  ```
+
+  `docker0` only exists while Docker is running, so start Docker before `sds`. `sds`
+  allows the non-loopback bind because a token is set. Check the bridge address with
+  `ip -4 addr show docker0` if it differs.
+
+## TCP proxy and Redis
+
+The TCP proxy accepts the connection, wakes `cache` and connects to Redis only once it
+is ready. Redis uses a Docker `HEALTHCHECK` (`redis-cli ping`) with `sds.health=docker`
+instead of a `tcp://` probe: Docker's port forwarder accepts connections on 18111 before
+Redis listens, so a TCP probe would report the group ready too early and the first
+client would be disconnected.
+
+A wake takes one to two seconds here: `whoami` starts instantly, `sds.start_grace` is
+1 s and Redis is healthy within a second or two. Real applications take longer; raise
+`sds.start_timeout` accordingly.
+
+Clean up with `docker compose down` and stop `sds run` with Ctrl-C.
